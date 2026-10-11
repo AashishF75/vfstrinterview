@@ -205,6 +205,8 @@ class InterviewSessionService:
                 "question_text": stored_q["question_text"],
                 "topic": stored_q.get("topic", interview.get("title", "Technical Assessment")),
                 "question_type": stored_q.get("question_type", "conceptual"),
+                "expected_answer": stored_q.get("expected_answer"),
+                "keywords": stored_q.get("keywords") or [],
             }
         else:
             try:
@@ -243,13 +245,15 @@ class InterviewSessionService:
             "final_scorecard_id": None,
             "created_at": now,
             "updated_at": now,
-            # Cache active question in session state
+            # Cache active question in session state (internal expected_answer retained for rubric grounding)
             "active_question": {
                 "question_text": gen_q["question_text"],
                 "topic": gen_q["topic"],
                 "difficulty": initial_diff.value,
                 "question_type": gen_q.get("question_type", "conceptual"),
                 "coding_spec": coding_spec,
+                "expected_answer": gen_q.get("expected_answer"),
+                "keywords": gen_q.get("keywords") or [],
             },
         }
 
@@ -564,6 +568,8 @@ class InterviewSessionService:
                     answer=answer_text,
                     difficulty=curr_diff,
                     topic=topic,
+                    expected_answer=active_q.get("expected_answer"),
+                    keywords=active_q.get("keywords") or [],
                 )
             except (AIProviderUnavailableError, AIProviderError) as exc:
                 logger.error("AI provider failure during answer evaluation: %s", exc)
@@ -809,6 +815,8 @@ class InterviewSessionService:
                 "question_text": stored_next_q["question_text"],
                 "topic": stored_next_q.get("topic", interview_title),
                 "question_type": stored_next_q.get("question_type", target_type),
+                "expected_answer": stored_next_q.get("expected_answer"),
+                "keywords": stored_next_q.get("keywords") or [],
             }
         else:
             try:
@@ -851,6 +859,8 @@ class InterviewSessionService:
                         "difficulty": next_diff.value,
                         "question_type": next_q_gen.get("question_type", target_type),
                         "coding_spec": coding_spec_next,
+                        "expected_answer": next_q_gen.get("expected_answer"),
+                        "keywords": next_q_gen.get("keywords") or [],
                     },
                     "updated_at": now,
                 }
@@ -1051,6 +1061,12 @@ class InterviewSessionService:
         if active_q.get("question_type") == "coding" and not coding_spec:
             coding_spec = CodingChallengeService.get_candidate_challenge_spec(active_q.get("question_text", ""))
 
+        # Strip internal rubric fields (expected_answer, keywords) before returning to student client
+        safe_active_q = {
+            k: v for k, v in active_q.items()
+            if k not in ("expected_answer", "keywords")
+        }
+
         return {
             "has_session": True,
             "session_id": session["session_id"],
@@ -1068,7 +1084,7 @@ class InterviewSessionService:
             "topic": active_q.get("topic", interview_title),
             "question_type": active_q.get("question_type", "conceptual"),
             "coding_spec": coding_spec,
-            "active_question": active_q,
+            "active_question": safe_active_q,
             "expires_at": session.get("expires_at").isoformat() if session.get("expires_at") else None,
             "time_remaining_seconds": time_remaining,
             "scorecard_id": session.get("scorecard_id") or session.get("final_scorecard_id"),

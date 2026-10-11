@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Tuple, Optional
+from datetime import datetime, timezone
+from typing import Dict, List, Any, Tuple, Optional, Type
 import asyncio
+import email.utils
 import json
 import logging
+import random
 import re
+import time
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
@@ -21,6 +25,79 @@ class AIProviderUnavailableError(Exception):
 class AIProviderError(Exception):
     """Raised when an active AI provider encounters a runtime, network, rate-limit, or parsing failure."""
     pass
+
+
+class AITelemetryRecord(BaseModel):
+    """Structured telemetry record for tracking AI provider requests, latencies, and token usage."""
+    task: str
+    provider: str = "gemini"
+    model: str
+    outcome: str  # "success" | "timeout" | "network_error" | "rate_limit" | "service_unavailable" | "auth_failure" | "permanent_error" | "deadline_exceeded" | "invalid_json"
+    latency_ms: float
+    attempts: int
+    prompt_tokens: Optional[int] = None
+    candidates_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    http_status: Optional[int] = None
+
+
+def log_ai_telemetry(record: AITelemetryRecord) -> None:
+    """
+    Emits a structured JSON application log for AI request telemetry.
+    Never logs API keys, authorization headers, complete prompts, candidate answers, or other sensitive content.
+    """
+    telemetry_payload = {
+        "event": "ai_request_telemetry",
+        "task": record.task,
+        "provider": record.provider,
+        "model": record.model,
+        "outcome": record.outcome,
+        "latency_ms": round(record.latency_ms, 2),
+        "attempts": record.attempts,
+        "prompt_tokens": record.prompt_tokens,
+        "candidates_tokens": record.candidates_tokens,
+        "total_tokens": record.total_tokens,
+        "http_status": record.http_status,
+    }
+    logger.info("AI Request Telemetry: %s", json.dumps(telemetry_payload))
+
+
+def parse_retry_after(header_value: Optional[str]) -> Optional[float]:
+    """
+    Parses HTTP 'Retry-After' header value (seconds or RFC 2822 / 1123 HTTP-date).
+    Returns delay in seconds as float, or None if invalid or absent.
+    """
+    if not header_value or not str(header_value).strip():
+        return None
+    cleaned = str(header_value).strip()
+    try:
+        val = float(cleaned)
+        return max(0.0, val)
+    except ValueError:
+        pass
+    try:
+        target_dt = email.utils.parsedate_to_datetime(cleaned)
+        now_dt = datetime.now(timezone.utc)
+        if target_dt.tzinfo is None:
+            target_dt = target_dt.replace(tzinfo=timezone.utc)
+        delay = (target_dt - now_dt).total_seconds()
+        return max(0.0, delay)
+    except Exception:
+        return None
+
+
+def compute_backoff_delay(
+    attempt: int,
+    base_delay: float,
+    factor: float,
+    max_delay: float,
+    jitter_range: float = 0.5,
+) -> float:
+    """Computes bounded exponential backoff delay with random jitter, strictly capped at max_delay."""
+    nominal = base_delay * (factor ** attempt)
+    jitter = random.uniform(0.0, jitter_range)
+    delay = nominal + jitter
+    return min(max_delay, max(0.0, delay))
 
 
 class AdaptiveDifficultyPolicy:
@@ -113,6 +190,8 @@ class BaseInterviewAIProvider(ABC):
         answer: str,
         difficulty: QuestionDifficulty,
         topic: str,
+        expected_answer: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Returns dict with: score (0.0-10.0), feedback, strengths, improvements."""
         pass
@@ -220,30 +299,33 @@ class MockRuleEngineProvider(BaseInterviewAIProvider):
         answer: str,
         difficulty: QuestionDifficulty,
         topic: str,
+        expected_answer: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         cleaned = answer.strip().lower()
         word_count = len(cleaned.split())
 
-        # Determine target keywords from question bank
-        keywords = []
-        for d_pool in self.NETWORKING_QUESTIONS.values():
-            for item in d_pool:
-                if (
-                    item["topic"].lower() in topic.lower()
-                    or topic.lower() in item["topic"].lower()
-                    or item["question"].lower() in question.lower()
-                    or question.lower() in item["question"].lower()
-                ):
-                    keywords = item["keywords"]
+        # Determine target keywords from passed parameter or fallback question bank
+        target_keywords = list(keywords) if keywords else []
+        if not target_keywords:
+            for d_pool in self.NETWORKING_QUESTIONS.values():
+                for item in d_pool:
+                    if (
+                        item["topic"].lower() in topic.lower()
+                        or topic.lower() in item["topic"].lower()
+                        or item["question"].lower() in question.lower()
+                        or question.lower() in item["question"].lower()
+                    ):
+                        target_keywords = item["keywords"]
+                        break
+                if target_keywords:
                     break
-            if keywords:
-                break
 
-        if not keywords:
-            keywords = ["network", "protocol", "packet", "layer", "ip", "host", "address"]
+        if not target_keywords:
+            target_keywords = ["network", "protocol", "packet", "layer", "ip", "host", "address"]
 
-        matched_kw = [k for k in keywords if k.lower() in cleaned]
-        match_ratio = len(matched_kw) / max(1, len(keywords))
+        matched_kw = [k for k in target_keywords if k.lower() in cleaned]
+        match_ratio = len(matched_kw) / max(1, len(target_keywords))
 
         # Heuristic Scoring (0.0 to 10.0)
         # 1. Base attempt component (2.0 points if word_count >= 5)
@@ -267,7 +349,7 @@ class MockRuleEngineProvider(BaseInterviewAIProvider):
         else:
             improvements.append("Elaborate further on architectural mechanisms and protocol behavior.")
 
-        missing_kw = [k for k in keywords if k not in matched_kw]
+        missing_kw = [k for k in target_keywords if k not in matched_kw]
         if missing_kw:
             improvements.append(f"Could strengthen the explanation by covering: {', '.join(missing_kw[:3])}.")
 
@@ -409,6 +491,8 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
         model_name: Optional[str] = None,
         base_url: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
+        max_retries: Optional[int] = None,
+        total_deadline_seconds: Optional[float] = None,
     ):
         if not api_key or not api_key.strip():
             raise AIProviderUnavailableError("GEMINI_API_KEY must not be empty.")
@@ -419,6 +503,18 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
         self.model_name = raw_model
         self.base_url = (base_url or settings.GEMINI_API_BASE_URL).rstrip("/")
         self.timeout_seconds = float(timeout_seconds or settings.AI_REQUEST_TIMEOUT_SECONDS)
+        self.max_retries = int(
+            max_retries if max_retries is not None else getattr(settings, "AI_MAX_RETRIES", 2)
+        )
+        self.total_deadline_seconds = float(
+            total_deadline_seconds if total_deadline_seconds is not None else getattr(
+                settings, "AI_TOTAL_REQUEST_DEADLINE_SECONDS", 30.0
+            )
+        )
+        self.base_delay = float(getattr(settings, "AI_RETRY_BASE_DELAY_SECONDS", 1.0))
+        self.backoff_factor = float(getattr(settings, "AI_RETRY_BACKOFF_FACTOR", 1.5))
+        self.max_delay = float(getattr(settings, "AI_RETRY_MAX_DELAY_SECONDS", 10.0))
+        self.max_output_tokens = int(getattr(settings, "AI_MAX_OUTPUT_TOKENS", 1024))
 
     def get_mode(self) -> EvaluatorMode:
         return EvaluatorMode.GEMINI
@@ -435,10 +531,13 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
         self,
         prompt: str,
         system_instruction: Optional[str] = None,
+        task: str = "generic",
+        schema: Optional[Type[BaseModel]] = None,
     ) -> Dict[str, Any]:
         """
         Executes HTTP POST request to Google Gemini API with header-based authentication,
-        timeout enforcement, and structured JSON parsing.
+        bounded retries for transient errors, Retry-After header compliance,
+        deadline enforcement, token usage telemetry, and structured JSON parsing.
         """
         url = f"{self.base_url}/models/{self.model_name}:generateContent"
         headers = {
@@ -455,6 +554,7 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
             "generationConfig": {
                 "temperature": settings.AI_TEMPERATURE,
                 "responseMimeType": "application/json",
+                "maxOutputTokens": self.max_output_tokens,
             },
         }
         if system_instruction:
@@ -462,43 +562,235 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
                 "parts": [{"text": system_instruction}]
             }
 
+        start_time = time.monotonic()
+        deadline = start_time + self.total_deadline_seconds
         response = None
-        max_retries = 1
-        for attempt in range(max_retries + 1):
+        attempt_count = 0
+
+        for attempt in range(self.max_retries + 1):
+            attempt_count += 1
+            now = time.monotonic()
+            remaining_deadline = deadline - now
+            if remaining_deadline <= 0:
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="gemini",
+                        model=self.model_name,
+                        outcome="deadline_exceeded",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        http_status=None,
+                    )
+                )
+                raise AIProviderError(
+                    f"Gemini API request exceeded total deadline of {self.total_deadline_seconds}s."
+                )
+
+            attempt_timeout = min(self.timeout_seconds, remaining_deadline)
+
             try:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                async with httpx.AsyncClient(timeout=attempt_timeout) as client:
                     response = await client.post(url, headers=headers, json=payload)
             except httpx.TimeoutException:
-                if attempt < max_retries:
-                    await asyncio.sleep(1.0)
-                    continue
+                if attempt < self.max_retries:
+                    backoff = compute_backoff_delay(
+                        attempt, self.base_delay, self.backoff_factor, self.max_delay
+                    )
+                    rem_after_call = deadline - time.monotonic()
+                    if backoff <= rem_after_call:
+                        logger.warning(
+                            "Gemini API timeout on attempt %d/%d; retrying in %.2fs...",
+                            attempt + 1,
+                            self.max_retries + 1,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        logger.warning(
+                            "Retry backoff (%.2fs) exceeds remaining deadline budget (%.1fs); stopping retry.",
+                            backoff,
+                            rem_after_call,
+                        )
+                        latency_ms = (time.monotonic() - start_time) * 1000
+                        log_ai_telemetry(
+                            AITelemetryRecord(
+                                task=task,
+                                provider="gemini",
+                                model=self.model_name,
+                                outcome="deadline_exceeded",
+                                latency_ms=latency_ms,
+                                attempts=attempt_count,
+                                http_status=None,
+                            )
+                        )
+                        raise AIProviderError(
+                            f"Gemini API retry backoff ({backoff:.1f}s) exceeds remaining request deadline ({rem_after_call:.1f}s)."
+                        )
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="gemini",
+                        model=self.model_name,
+                        outcome="timeout",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        http_status=None,
+                    )
+                )
                 logger.error("Gemini API request timed out after %.1fs", self.timeout_seconds)
                 raise AIProviderError(f"Gemini API request timed out after {self.timeout_seconds}s.")
             except httpx.RequestError as exc:
-                if attempt < max_retries:
-                    await asyncio.sleep(1.0)
-                    continue
+                if attempt < self.max_retries:
+                    backoff = compute_backoff_delay(
+                        attempt, self.base_delay, self.backoff_factor, self.max_delay
+                    )
+                    rem_after_call = deadline - time.monotonic()
+                    if backoff <= rem_after_call:
+                        logger.warning(
+                            "Gemini API network request error (%s) on attempt %d/%d; retrying in %.2fs...",
+                            type(exc).__name__,
+                            attempt + 1,
+                            self.max_retries + 1,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        logger.warning(
+                            "Retry backoff (%.2fs) exceeds remaining deadline budget (%.1fs); stopping retry.",
+                            backoff,
+                            rem_after_call,
+                        )
+                        latency_ms = (time.monotonic() - start_time) * 1000
+                        log_ai_telemetry(
+                            AITelemetryRecord(
+                                task=task,
+                                provider="gemini",
+                                model=self.model_name,
+                                outcome="deadline_exceeded",
+                                latency_ms=latency_ms,
+                                attempts=attempt_count,
+                                http_status=None,
+                            )
+                        )
+                        raise AIProviderError(
+                            f"Gemini API retry backoff ({backoff:.1f}s) exceeds remaining request deadline ({rem_after_call:.1f}s)."
+                        )
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="gemini",
+                        model=self.model_name,
+                        outcome="network_error",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        http_status=None,
+                    )
+                )
                 logger.error("Gemini API network request error: %s", type(exc).__name__)
                 raise AIProviderError(f"Gemini network connection failed: {type(exc).__name__}")
 
-            if response.status_code in [429, 503] and attempt < max_retries:
-                logger.warning(
-                    "Transient Gemini API response HTTP %d (attempt %d/%d); retrying...",
-                    response.status_code,
-                    attempt + 1,
-                    max_retries + 1,
-                )
-                await asyncio.sleep(1.5)
-                continue
+            # Retryable transient status codes: 429, 500, 502, 503, 504
+            if response.status_code in [429, 500, 502, 503, 504]:
+                if attempt < self.max_retries:
+                    retry_after = (
+                        parse_retry_after(response.headers.get("Retry-After"))
+                        if response.status_code == 429
+                        else None
+                    )
+                    if retry_after is not None:
+                        sleep_delay = retry_after
+                    else:
+                        sleep_delay = compute_backoff_delay(
+                            attempt, self.base_delay, self.backoff_factor, self.max_delay
+                        )
+
+                    rem_after_call = deadline - time.monotonic()
+                    if sleep_delay > rem_after_call:
+                        logger.warning(
+                            "Retry delay (%.2fs) exceeds remaining deadline budget (%.1fs); stopping retry.",
+                            sleep_delay,
+                            rem_after_call,
+                        )
+                        latency_ms = (time.monotonic() - start_time) * 1000
+                        log_ai_telemetry(
+                            AITelemetryRecord(
+                                task=task,
+                                provider="gemini",
+                                model=self.model_name,
+                                outcome="deadline_exceeded",
+                                latency_ms=latency_ms,
+                                attempts=attempt_count,
+                                http_status=response.status_code,
+                            )
+                        )
+                        raise AIProviderError(
+                            f"Gemini API retry delay ({sleep_delay:.1f}s) exceeds remaining request deadline ({rem_after_call:.1f}s)."
+                        )
+
+                    logger.warning(
+                        "Transient Gemini API response HTTP %d (attempt %d/%d); sleeping %.2fs before retry...",
+                        response.status_code,
+                        attempt + 1,
+                        self.max_retries + 1,
+                        sleep_delay,
+                    )
+                    await asyncio.sleep(sleep_delay)
+                    continue
+                else:
+                    break
+
+            # Permanent status code (200, 400, 401, 403, 404, 422, etc.) -> break loop
             break
 
         if response.status_code in [401, 403]:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="auth_failure",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=response.status_code,
+                )
+            )
             logger.error("Gemini API returned authentication error HTTP %d", response.status_code)
             raise AIProviderError("Gemini API authentication failed. Verify configured GEMINI_API_KEY.")
         elif response.status_code == 429:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="rate_limit",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=429,
+                )
+            )
             logger.error("Gemini API returned rate-limit or quota exhaustion HTTP 429")
             raise AIProviderError("Gemini API quota or rate limit exceeded. Please retry shortly.")
         elif response.status_code in [500, 502, 503, 504]:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="service_unavailable",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=response.status_code,
+                )
+            )
             logger.error("Gemini API service unavailable HTTP %d", response.status_code)
             err_detail = ""
             try:
@@ -514,6 +806,18 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
                 )
             raise AIProviderError(f"Gemini AI service is temporarily unavailable (HTTP {response.status_code}).")
         elif response.is_error:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="permanent_error",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=response.status_code,
+                )
+            )
             logger.error("Gemini API error HTTP %d", response.status_code)
             err_detail = ""
             try:
@@ -530,16 +834,68 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
         try:
             resp_data = response.json()
         except Exception:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="invalid_json",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=200,
+                )
+            )
             raise AIProviderError("Gemini API returned non-JSON HTTP body.")
+
+        # Extract usageMetadata safely without fabricating
+        usage_meta = resp_data.get("usageMetadata")
+        prompt_tokens = None
+        candidates_tokens = None
+        total_tokens = None
+        if isinstance(usage_meta, dict):
+            prompt_tokens = usage_meta.get("promptTokenCount")
+            candidates_tokens = usage_meta.get("candidatesTokenCount")
+            total_tokens = usage_meta.get("totalTokenCount")
 
         candidates = resp_data.get("candidates", [])
         if not candidates:
             block_reason = resp_data.get("promptFeedback", {}).get("blockReason", "empty response")
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="empty_candidates",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
             raise AIProviderError(f"Gemini returned no candidates (reason: {block_reason}).")
 
         first_candidate = candidates[0]
         content_parts = first_candidate.get("content", {}).get("parts", [])
         if not content_parts or not content_parts[0].get("text"):
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="empty_content",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
             raise AIProviderError("Gemini candidate contains empty content parts.")
 
         raw_text = content_parts[0]["text"]
@@ -549,10 +905,79 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
             parsed = json.loads(cleaned_json)
         except json.JSONDecodeError as exc:
             logger.error("Gemini response is not valid JSON: %s", exc)
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="invalid_content_json",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
             raise AIProviderError("Gemini response could not be parsed as valid JSON.")
 
         if not isinstance(parsed, dict):
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="gemini",
+                    model=self.model_name,
+                    outcome="invalid_content_structure",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
             raise AIProviderError("Gemini response did not return a JSON object.")
+
+        if schema is not None:
+            try:
+                schema.model_validate(parsed)
+            except Exception as exc:
+                logger.error("Gemini %s schema validation failed: %s", task, exc)
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="gemini",
+                        model=self.model_name,
+                        outcome="validation_error",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        prompt_tokens=prompt_tokens,
+                        candidates_tokens=candidates_tokens,
+                        total_tokens=total_tokens,
+                        http_status=200,
+                    )
+                )
+                schema_name = "evaluation" if "evaluate" in task else ("question" if "question" in task else ("scorecard" if "scorecard" in task else task))
+                raise AIProviderError(f"Gemini response did not match the required {schema_name} schema.")
+
+        latency_ms = (time.monotonic() - start_time) * 1000
+        log_ai_telemetry(
+            AITelemetryRecord(
+                task=task,
+                provider="gemini",
+                model=self.model_name,
+                outcome="success",
+                latency_ms=latency_ms,
+                attempts=attempt_count,
+                prompt_tokens=prompt_tokens,
+                candidates_tokens=candidates_tokens,
+                total_tokens=total_tokens,
+                http_status=200,
+            )
+        )
 
         return parsed
 
@@ -568,9 +993,9 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
             "You are an expert technical interviewer assessing undergraduate computer science engineering candidates. "
             "Generate a single, technically rigorous interview question based on the assigned topic and instructions, "
             f"specifically targeting the '{difficulty.value}' difficulty tier:\n"
-            "- easy: Foundational conceptual clarity (OSI layers, standard headers, port numbers, baseline definitions).\n"
-            "- medium: Operational protocol workflows (handshakes, ARP resolution, 802.1Q frame tagging, DHCP DORA, subnet calculation).\n"
-            "- hard: Multi-protocol architecture, state tables, loop prevention, dynamic routing (OSPF LSAs, BGP path selection, stateful packet filtering).\n\n"
+            "- easy: Foundational conceptual clarity (standard headers, port numbers, baseline definitions).\n"
+            "- medium: Operational workflows, calculation, implementation mechanics.\n"
+            "- hard: System architecture, state tables, trade-offs, advanced troubleshooting.\n\n"
             "CRITICAL REQUIREMENTS:\n"
             "1. Do NOT repeat or closely paraphrase any previous questions provided.\n"
             "2. Output strictly JSON conforming to: "
@@ -586,7 +1011,12 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
             f"Previous Questions Asked in this Session:\n{prev_q_str}\n\n"
             "Generate the next question as strict JSON."
         )
-        data = await self._call_gemini_api(prompt=user_prompt, system_instruction=system_prompt)
+        data = await self._call_gemini_api(
+            prompt=user_prompt,
+            system_instruction=system_prompt,
+            task="generate_question",
+            schema=GeminiQuestionSchema,
+        )
         try:
             validated = GeminiQuestionSchema.model_validate(data)
         except Exception as exc:
@@ -605,14 +1035,18 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
         answer: str,
         difficulty: QuestionDifficulty,
         topic: str,
+        expected_answer: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         system_prompt = (
-            "You are an expert technical interviewer assessing university engineering students in computer networking. "
+            "You are an expert technical interviewer assessing university engineering students. "
             "Evaluate the candidate's answer using a rigorous multi-dimensional rubric:\n"
-            "1. RELEVANCE & CORRECTNESS: Does the answer directly address the specific question asked? Are protocol mechanisms, headers, and layer interactions factually and technically correct?\n"
-            "2. COMPLETENESS & DEPTH: Does the answer cover the essential steps and operational nuances expected for the difficulty tier, or is it merely superficial?\n"
-            "3. CLARITY & COHERENCE (ANTI-KEYWORD STUFFING): CRITICAL: Do NOT reward answers that merely dump buzzwords or technical terms without coherent explanation of how they interact. "
-            "Penalize disjointed keyword lists, hallucinated protocols, or incorrect layer associations.\n"
+            "1. RELEVANCE & CORRECTNESS: Does the answer directly address the specific question asked? "
+            "Are mechanisms, concepts, and interactions factually and technically correct? "
+            "If reference criteria are provided, evaluate alignment without requiring verbatim matching.\n"
+            "2. COMPLETENESS & DEPTH: Does the answer cover the essential steps and operational nuances expected for the difficulty tier?\n"
+            "3. CLARITY & COHERENCE (ANTI-KEYWORD STUFFING): CRITICAL: Do NOT reward answers that merely dump buzzwords without explanation. "
+            "Penalize disjointed keyword lists, hallucinated protocols, or incorrect associations.\n"
             "4. SCORING SCALE (0.0 to 10.0):\n"
             "   - 9.0 - 10.0: Flawless technical mastery with precise architecture and operational detail.\n"
             "   - 7.5 - 8.9: Proficient, technically sound response with minor omissions.\n"
@@ -622,14 +1056,25 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
             "Output strictly JSON conforming to: "
             "{\"score\": float (0.0-10.0), \"feedback\": string, \"strengths\": [string], \"improvements\": [string], \"rationale\": string}."
         )
-        user_prompt = (
-            f"Topic: {topic}\n"
-            f"Difficulty Tier: {difficulty.value}\n"
-            f"Question Asked:\n{question}\n\n"
-            f"Candidate's Submitted Answer:\n{answer}\n\n"
-            "Evaluate the candidate's response and output strictly conforming JSON."
+        prompt_parts = [
+            f"Topic: {topic}",
+            f"Difficulty Tier: {difficulty.value}",
+            f"Question Asked:\n{question}",
+        ]
+        if expected_answer and expected_answer.strip():
+            prompt_parts.append(f"Reference / Expected Answer Criteria:\n{expected_answer.strip()}")
+        if keywords:
+            prompt_parts.append(f"Key Technical Concepts / Keywords Expected: {', '.join(keywords)}")
+        prompt_parts.append(f"Candidate's Submitted Answer:\n{answer}")
+        prompt_parts.append("Evaluate the candidate's response and output strictly conforming JSON.")
+        user_prompt = "\n\n".join(prompt_parts)
+
+        data = await self._call_gemini_api(
+            prompt=user_prompt,
+            system_instruction=system_prompt,
+            task="evaluate_answer",
+            schema=GeminiEvaluationSchema,
         )
-        data = await self._call_gemini_api(prompt=user_prompt, system_instruction=system_prompt)
         try:
             validated = GeminiEvaluationSchema.model_validate(data)
         except Exception as exc:
@@ -691,7 +1136,12 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
             f"Calculated Overall Score: {calc_overall}/10 ({calc_percentage}%)\n\n"
             "Provide the finalized holistic performance summary as strict JSON."
         )
-        data = await self._call_gemini_api(prompt=user_prompt, system_instruction=system_prompt)
+        data = await self._call_gemini_api(
+            prompt=user_prompt,
+            system_instruction=system_prompt,
+            task="generate_scorecard_summary",
+            schema=GeminiScorecardSchema,
+        )
         try:
             validated = GeminiScorecardSchema.model_validate(data)
         except Exception as exc:
@@ -732,6 +1182,8 @@ def get_ai_provider() -> BaseInterviewAIProvider:
             model_name=settings.resolved_gemini_model,
             base_url=settings.GEMINI_API_BASE_URL,
             timeout_seconds=settings.AI_REQUEST_TIMEOUT_SECONDS,
+            max_retries=settings.AI_MAX_RETRIES,
+            total_deadline_seconds=settings.AI_TOTAL_REQUEST_DEADLINE_SECONDS,
         )
 
     elif provider_name in ["mock", "rule_engine", "mock_rule_engine"]:

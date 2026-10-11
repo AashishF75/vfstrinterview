@@ -157,6 +157,12 @@ class Settings(BaseSettings):
     GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
     AI_TEMPERATURE: float = 0.7
     AI_REQUEST_TIMEOUT_SECONDS: float = 20.0
+    AI_MAX_RETRIES: int = 2
+    AI_RETRY_BASE_DELAY_SECONDS: float = 1.0
+    AI_RETRY_BACKOFF_FACTOR: float = 1.5
+    AI_RETRY_MAX_DELAY_SECONDS: float = 10.0
+    AI_TOTAL_REQUEST_DEADLINE_SECONDS: float = 30.0
+    AI_MAX_OUTPUT_TOKENS: int = 1024
     INTERVIEW_TOTAL_QUESTIONS_DEFAULT: int = 5
     ALLOW_MOCK_EVALUATOR_FALLBACK: Optional[bool] = None
 
@@ -243,6 +249,8 @@ class Settings(BaseSettings):
             "ai_provider": self.AI_PROVIDER or "mock (fallback default)",
             "gemini_model": self.resolved_gemini_model,
             "has_gemini_key": bool(self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip()),
+            "ai_max_retries": self.AI_MAX_RETRIES,
+            "ai_max_output_tokens": self.AI_MAX_OUTPUT_TOKENS,
             "email_dispatch_enabled": self.EMAIL_DISPATCH_ENABLED,
             "has_smtp_host": bool(self.SMTP_HOST),
             "smtp_port": self.SMTP_PORT,
