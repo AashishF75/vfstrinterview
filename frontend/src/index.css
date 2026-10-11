@@ -43,3 +43,21 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+
+/* Subtle Technical Grid & Atmospheric Effects */
+.cyber-grid {
+  background-image:
+    linear-gradient(to right, rgba(56, 189, 248, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(56, 189, 248, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.radial-fade-mask {
+  mask-image: radial-gradient(circle at center, black 45%, transparent 85%);
+  -webkit-mask-image: radial-gradient(circle at center, black 45%, transparent 85%);
+}
+
+.glow-border-cyan {
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  box-shadow: 0 0 25px -8px rgba(56, 189, 248, 0.2);
+}
