@@ -230,6 +230,36 @@ export const getAllowedInstitutions = async () => {
   }
 };
 
+export const registerGeneralStudent = async ({
+  fullName,
+  collegeName,
+  collegeRegNo,
+  email,
+  contactNumber,
+  password,
+}) => {
+  try {
+    const response = await apiClient.post('/api/auth/general/register', {
+      full_name: fullName,
+      college_name: collegeName,
+      college_reg_no: collegeRegNo,
+      email: email,
+      contact_number: contactNumber,
+      password: password,
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'General student registration failed',
+      status: error.response?.status,
+    };
+  }
+};
+
 export const initiateGeneralRegistration = async ({
   fullName,
   collegeName,

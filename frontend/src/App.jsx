@@ -75,22 +75,9 @@ function HomePage() {
         <div className="absolute inset-0 cyber-grid radial-fade-mask opacity-60" />
       </div>
 
-      {/* Top University Identity Bar */}
-      <div className="relative z-10 border-b border-slate-900 bg-slate-950/80 backdrop-blur-md px-4 py-2 text-xs">
-        <div className="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-2 text-slate-400">
-          <div className="flex items-center space-x-2">
-            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-rose-950/80 text-rose-400 border border-rose-800/50 tracking-wider">
-              VFSTR
-            </span>
-            <span className="font-semibold text-slate-300">
-              Vignan's Foundation for Science, Technology & Research
-            </span>
-            <span className="hidden sm:inline text-slate-600">•</span>
-            <span className="hidden sm:inline text-slate-400 font-medium">
-              Deemed to be University (NAAC A+)
-            </span>
-          </div>
-
+      {/* Top Status Bar */}
+      <div className="relative z-10 border-b border-slate-900/80 bg-slate-950/80 backdrop-blur-md px-4 py-1.5 text-xs">
+        <div className="max-w-7xl mx-auto flex justify-end items-center gap-2 text-slate-400">
           <div className="flex items-center space-x-3 text-[11px]">
             <button
               onClick={() => setShowDiagnosticsModal(true)}
@@ -100,8 +87,6 @@ function HomePage() {
               <span className={`w-1.5 h-1.5 rounded-full ${healthData ? 'bg-cyan-400 animate-pulse' : healthLoading ? 'bg-amber-400' : 'bg-rose-400'}`} />
               <span>{healthData ? 'System Operational' : healthLoading ? 'Connecting...' : 'API Offline'}</span>
             </button>
-            <span className="text-slate-700 hidden sm:inline">|</span>
-            <span className="text-slate-500 hidden sm:inline">Vadlamudi, Guntur</span>
           </div>
         </div>
       </div>

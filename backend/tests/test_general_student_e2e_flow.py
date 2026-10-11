@@ -255,7 +255,7 @@ async def test_full_general_student_journey_e2e(mock_dbs, capture_emails):
             assert r["total_questions"] == 375
 
         # ====================================================================
-        # 2. General Student Registration (Step 1: Initiate)
+        # 2. General Student Registration (Direct - No OTP required)
         # ====================================================================
         reg_payload = {
             "full_name": "Kavya Priya Sharma",
@@ -265,29 +265,17 @@ async def test_full_general_student_journey_e2e(mock_dbs, capture_emails):
             "contact_number": "9876543210",
             "password": "ValidPassword123!",
         }
-        init_resp = await client.post("/api/auth/general/register/initiate", json=reg_payload)
-        assert init_resp.status_code == 200, init_resp.text
-        init_data = init_resp.json()
-        assert init_data["status"] == "success"
+        reg_resp = await client.post("/api/auth/general/register", json=reg_payload)
+        assert reg_resp.status_code == 201, reg_resp.text
+        reg_data = reg_resp.json()
+        assert reg_data["status"] == "success"
+        assert reg_data["user"]["registration_number"] == "211VIIT0912"
+        assert reg_data["user"]["role"] == "student"
+        assert reg_data["user"]["institution_id"] == partner_college
+        assert "access_token" in reg_data
 
-        assert len(capture_emails) == 1
-        otp_code = capture_emails[0]["code"]
-        assert len(otp_code) == 6
-
-        # ====================================================================
-        # 3. Email Verification & Account Completion (Step 2: Complete)
-        # ====================================================================
-        complete_payload = {
-            "email": "kavya.priya@viit.ac.in",
-            "verification_code": otp_code,
-        }
-        comp_resp = await client.post("/api/auth/general/register/complete", json=complete_payload)
-        assert comp_resp.status_code == 201, comp_resp.text
-        comp_data = comp_resp.json()
-        assert "access_token" in comp_data
-        assert comp_data["user"]["registration_number"] == "211VIIT0912"
-        assert comp_data["user"]["role"] == "student"
-        assert comp_data["user"]["institution_id"] == partner_college
+        # CRITICAL VERIFICATION: No email or OTP was dispatched
+        assert len(capture_emails) == 0
 
         # ====================================================================
         # 4. Student Login & JWT Authentication

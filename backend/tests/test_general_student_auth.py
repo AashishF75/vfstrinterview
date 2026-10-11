@@ -283,14 +283,19 @@ async def test_general_registration_duplicate_student_id_conflict(mock_db):
 
 
 @pytest.mark.anyio
-async def test_general_registration_complete_lifecycle(mock_db, capture_emails):
-    """Full lifecycle: initiate -> email dispatch -> wrong OTP rejection -> right OTP complete -> JWT -> login."""
+async def test_general_registration_direct_success_without_otp(mock_db, capture_emails):
+    """
+    1. General-student registration succeeds without OTP.
+    2. General-student registration does not call the email-sending service.
+    7. Password is hashed rather than stored in plaintext.
+    8. Newly registered general student can log in immediately.
+    10. General-student registration does not create an OTP/pending-verification requirement.
+    """
     allowed_college = settings.ALLOWED_EXTERNAL_INSTITUTIONS[0]
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. Initiate
-        init_payload = {
+        payload = {
             "full_name": "Aashish Sharma",
             "college_name": allowed_college,
             "college_reg_no": "211VIIT099",
@@ -298,48 +303,36 @@ async def test_general_registration_complete_lifecycle(mock_db, capture_emails):
             "contact_number": "9876543210",
             "password": "StrongSecretPass123!"
         }
-        resp = await client.post("/api/auth/general/register/initiate", json=init_payload)
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "success"
-
-        # Check that OTP email was dispatched
-        assert len(capture_emails) == 1
-        otp_dispatched = capture_emails[0]["code"]
-        assert len(otp_dispatched) == 6
-
-        # 2. Resend Cooldown
-        resend_resp = await client.post(
-            "/api/auth/general/register/resend",
-            json={"email": "aashish@viit.ac.in"}
-        )
-        assert resend_resp.status_code == 429
-        assert "Please wait" in resend_resp.json()["detail"]
-
-        # 3. Wrong OTP rejected
-        wrong_resp = await client.post(
-            "/api/auth/general/register/complete",
-            json={"email": "aashish@viit.ac.in", "verification_code": "000000"}
-        )
-        assert wrong_resp.status_code == 400
-        assert "Invalid or expired verification code" in wrong_resp.json()["detail"]
-
-        # 4. Correct OTP completes registration
-        complete_resp = await client.post(
-            "/api/auth/general/register/complete",
-            json={"email": "aashish@viit.ac.in", "verification_code": otp_dispatched}
-        )
-        assert complete_resp.status_code == 201
-        data = complete_resp.json()
+        # 1. Register directly without OTP
+        resp = await client.post("/api/auth/general/register", json=payload)
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        assert data["status"] == "success"
         assert "access_token" in data
         assert data["user"]["email"] == "aashish@viit.ac.in"
-        assert data["user"]["full_name"] == "Aashish Sharma"
-        # Verify role is strictly STUDENT
         assert data["user"]["role"] == "student"
         assert data["user"]["institution_id"] == allowed_college
         assert data["user"]["registration_number"] == "211VIIT099"
-        assert data["user"]["contact_number"] == "9876543210"
+        # Truthfully unverified via OTP, yet active
+        assert data["user"]["is_verified"] is False
 
-        # 5. Verify user can now log in using standard credentials
+        # 2. Confirm email-sending service was NOT called
+        assert len(capture_emails) == 0
+
+        # 3. Confirm no OTP verification record or pending requirement was created
+        verif_col = mock_db["registration_verifications"]
+        verif_doc = await verif_col.find_one({"email_normalized": "aashish@viit.ac.in"})
+        assert verif_doc is None
+
+        # 4. Confirm password is encrypted with bcrypt hash and not stored in plaintext
+        users_col = mock_db["users"]
+        user_record = await users_col.find_one({"email": "aashish@viit.ac.in"})
+        assert user_record is not None
+        assert "hashed_password" in user_record
+        assert user_record["hashed_password"] != "StrongSecretPass123!"
+        assert user_record["hashed_password"].startswith("$2b$") or user_record["hashed_password"].startswith("$2a$")
+
+        # 5. Newly registered general student can log in immediately
         login_resp = await client.post(
             "/api/auth/login",
             json={"email": "aashish@viit.ac.in", "password": "StrongSecretPass123!"}
@@ -352,45 +345,86 @@ async def test_general_registration_complete_lifecycle(mock_db, capture_emails):
 
 
 @pytest.mark.anyio
-async def test_general_registration_max_attempts_exceeded(mock_db, capture_emails):
-    """Submitting 3 incorrect OTPs invalidates the verification session."""
+async def test_general_registration_succeeds_when_smtp_unavailable(mock_db, monkeypatch):
+    """
+    3. Registration succeeds when SMTP is unavailable.
+    Even if the email service raises a fatal connection failure, registration succeeds
+    because email verification is completely bypassed for general students.
+    """
+    async def broken_smtp(*args, **kwargs):
+        raise RuntimeError("SMTP connection failed: Host unreachable")
+
+    monkeypatch.setattr(EmailService, "send_verification_otp", broken_smtp)
+
     allowed_college = settings.ALLOWED_EXTERNAL_INSTITUTIONS[0]
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Initiate
-        init_payload = {
-            "full_name": "Attempt Limit Test",
+        payload = {
+            "full_name": "Resilient Candidate",
             "college_name": allowed_college,
-            "college_reg_no": "211VIIT888",
-            "email": "attempts@viit.ac.in",
+            "college_reg_no": "211VIIT321",
+            "email": "resilient@viit.ac.in",
             "contact_number": "9876543210",
-            "password": "Password123!"
+            "password": "StrongPass123!"
         }
-        await client.post("/api/auth/general/register/initiate", json=init_payload)
-        real_otp = capture_emails[0]["code"]
-
-        # Attempt 1 failed
-        r1 = await client.post("/api/auth/general/register/complete", json={"email": "attempts@viit.ac.in", "verification_code": "111111"})
-        assert r1.status_code == 400
-
-        # Attempt 2 failed
-        r2 = await client.post("/api/auth/general/register/complete", json={"email": "attempts@viit.ac.in", "verification_code": "222222"})
-        assert r2.status_code == 400
-
-        # Attempt 3 failed
-        r3 = await client.post("/api/auth/general/register/complete", json={"email": "attempts@viit.ac.in", "verification_code": "333333"})
-        assert r3.status_code == 400
-
-        # Attempt 4 should inform that attempts are exceeded even with real code
-        r4 = await client.post("/api/auth/general/register/complete", json={"email": "attempts@viit.ac.in", "verification_code": real_otp})
-        assert r4.status_code == 400
-        assert "invalidated due to too many failed attempts" in r4.json()["detail"]
+        resp = await client.post("/api/auth/general/register", json=payload)
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["user"]["email"] == "resilient@viit.ac.in"
 
 
 @pytest.mark.anyio
-async def test_general_registration_role_escalation_impossible(mock_db, capture_emails):
-    """Privileged roles like 'platform_admin' cannot be supplied; role is always 'student'."""
+async def test_general_student_jwt_can_access_dashboard_and_enforces_rbac(mock_db):
+    """
+    9. A valid JWT can access the general-student dashboard / protected routes.
+    11. General student cannot access admin routes (RBAC preserved).
+    """
+    allowed_college = settings.ALLOWED_EXTERNAL_INSTITUTIONS[0]
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Register and log in
+        reg_payload = {
+            "full_name": "Dashboard Tester",
+            "college_name": allowed_college,
+            "college_reg_no": "211VIIT654",
+            "email": "dashboard@viit.ac.in",
+            "contact_number": "9876543210",
+            "password": "ValidPassword123!"
+        }
+        reg_resp = await client.post("/api/auth/general/register", json=reg_payload)
+        assert reg_resp.status_code == 201
+
+        login_resp = await client.post(
+            "/api/auth/login",
+            json={"email": "dashboard@viit.ac.in", "password": "ValidPassword123!"}
+        )
+        assert login_resp.status_code == 200
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Student can access protected endpoint
+        prot_resp = await client.get("/api/auth/protected-test", headers=headers)
+        assert prot_resp.status_code == 200
+        assert prot_resp.json()["email"] == "dashboard@viit.ac.in"
+        assert prot_resp.json()["role"] == "student"
+
+        # Also verify /api/auth/me
+        me_resp = await client.get("/api/auth/me", headers=headers)
+        assert me_resp.status_code == 200
+        assert me_resp.json()["email"] == "dashboard@viit.ac.in"
+        assert me_resp.json()["role"] == "student"
+
+        # General student is strictly denied from admin routes
+        admin_resp = await client.get("/api/auth/admin-only", headers=headers)
+        assert admin_resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_general_registration_role_escalation_impossible(mock_db):
+    """Privileged roles like 'platform_admin' cannot be supplied; role is always strictly 'student'."""
     allowed_college = settings.ALLOWED_EXTERNAL_INSTITUTIONS[0]
     transport = ASGITransport(app=app)
 
@@ -404,74 +438,30 @@ async def test_general_registration_role_escalation_impossible(mock_db, capture_
             "password": "Password123!",
             "role": "platform_admin"  # Malicious extra field
         }
-        await client.post("/api/auth/general/register/initiate", json=payload)
-        otp = capture_emails[0]["code"]
-
-        comp_resp = await client.post(
-            "/api/auth/general/register/complete",
-            json={"email": "hacker@viit.ac.in", "verification_code": otp, "role": "platform_admin"}
-        )
+        comp_resp = await client.post("/api/auth/general/register", json=payload)
         assert comp_resp.status_code == 201
         assert comp_resp.json()["user"]["role"] == "student"
 
 
 @pytest.mark.anyio
-async def test_general_registration_otp_expiration(mock_db, capture_emails):
-    """Expired OTP codes cannot be redeemed and return 400 Bad Request."""
+async def test_general_registration_backward_compatible_endpoint(mock_db, capture_emails):
+    """Verify backward-compatible POST /api/auth/general/register/initiate also registers without OTP."""
     allowed_college = settings.ALLOWED_EXTERNAL_INSTITUTIONS[0]
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         payload = {
-            "full_name": "Expired Test Student",
+            "full_name": "Compat Candidate",
             "college_name": allowed_college,
-            "college_reg_no": "211VIIT555",
-            "email": "expired@viit.ac.in",
-            "contact_number": "9876543210",
-            "password": "Password123!"
-        }
-        await client.post("/api/auth/general/register/initiate", json=payload)
-        otp = capture_emails[0]["code"]
-
-        # Manually expire the record in the mock database
-        verif_col = mock_db["registration_verifications"]
-        for doc in verif_col.docs.values():
-            if doc.get("email_normalized") == "expired@viit.ac.in":
-                doc["expires_at"] = datetime.now(timezone.utc) - timedelta(minutes=5)
-
-        comp_resp = await client.post(
-            "/api/auth/general/register/complete",
-            json={"email": "expired@viit.ac.in", "verification_code": otp}
-        )
-        assert comp_resp.status_code == 400
-        assert "Invalid or expired verification code" in comp_resp.json()["detail"]
-
-
-@pytest.mark.anyio
-async def test_demo_otp_safeguards_in_production(mock_db, monkeypatch, capture_emails):
-    """In production mode or when DEMO_MODE=False, demo_otp_hint must never be exposed."""
-    allowed_college = settings.ALLOWED_EXTERNAL_INSTITUTIONS[0]
-    transport = ASGITransport(app=app)
-
-    # Force production settings
-    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
-    monkeypatch.setattr(settings, "DEMO_MODE", False)
-    assert not settings.is_demo_otp_allowed
-
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        payload = {
-            "full_name": "Prod Candidate",
-            "college_name": allowed_college,
-            "college_reg_no": "211VIIT444",
-            "email": "prod@viit.ac.in",
+            "college_reg_no": "211VIIT111",
+            "email": "compat@viit.ac.in",
             "contact_number": "9876543210",
             "password": "Password123!"
         }
         resp = await client.post("/api/auth/general/register/initiate", json=payload)
         assert resp.status_code == 200
-        data = resp.json()
-        assert "demo_otp_hint" not in data
-        assert "demo_mode" not in data
+        assert resp.json()["status"] == "success"
+        assert len(capture_emails) == 0
 
 
 @pytest.mark.anyio

@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Header
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import pymongo.errors
 from pymongo import ReturnDocument
@@ -31,6 +31,7 @@ from app.models.verification import (
     VfstrDirectRegisterRequest,
     ResendVerificationRequest,
     CompleteRegistrationRequest,
+    GeneralStudentRegisterRequest,
     GeneralStudentInitiateRequest,
     GeneralStudentResendRequest,
     GeneralStudentCompleteRequest
@@ -995,19 +996,21 @@ async def get_allowed_institutions():
     }
 
 
-@router.post("/general/register/initiate")
-async def initiate_general_registration(
-    payload: GeneralStudentInitiateRequest,
+async def _execute_general_student_registration(
+    payload: GeneralStudentRegisterRequest,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_database)
-):
+    db: AsyncIOMotorDatabase
+) -> Dict[str, Any]:
     """
-    Stage 1 of General Student Registration (Other Colleges/Universities):
+    Direct registration execution for General Students (Partner Colleges & Universities):
     - Validates full name, college name, student ID, email, contact number, password.
     - Strictly enforces configured partner institution-access policy.
     - Prevents duplicate email or duplicate college+ID accounts.
-    - Dispatches secure single-use OTP to verify email ownership.
     - Role is strictly determined by the backend as 'student' (role escalation prevented).
+    - Directly creates active User record with bcrypt hashed password.
+    - Does NOT call email service, does NOT send OTP, does NOT create pending verification state.
+    - Does NOT falsely mark email as verified (is_verified=False).
+    - Issues JWT access token for immediate login capability.
     """
     if db is None:
         raise HTTPException(
@@ -1016,8 +1019,6 @@ async def initiate_general_registration(
         )
 
     t_start = time.perf_counter()
-    client_ip = request.client.host if request.client else "unknown"
-    client_ip_h = hash_client_ip(client_ip)
     now = utc_now()
 
     clean_name = payload.get_clean_name()
@@ -1063,7 +1064,6 @@ async def initiate_general_registration(
         )
 
     users_col = db["users"]
-    verif_col = db["registration_verifications"]
     elig_col = db["eligibility_registry"]
 
     # Block registration if this registration number belongs to VFSTR registry or existing VFSTR user
@@ -1106,114 +1106,98 @@ async def initiate_general_registration(
             detail="An account with this student registration ID is already registered for this institution. Please sign in."
         )
 
-    # 6. Check if an active unconsumed verification is in progress for this college registration ID
-    active_reg_conflict = await verif_col.find_one({
-        "college_name": clean_college,
-        "college_reg_no": clean_reg_no,
-        "email_normalized": {"$ne": clean_email},
-        "is_consumed": False,
-        "expires_at": {"$gt": now}
-    })
-    if active_reg_conflict:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A verification session is already in progress for this student registration ID."
-        )
-
-    # 7. Check resend cooldown if an active verification session exists
-    active_verif = await verif_col.find_one({
-        "email_normalized": clean_email,
-        "registration_type": "external_student",
-        "is_consumed": False
-    })
-    if active_verif:
-        last_resend = active_verif.get("last_resend_at")
-        if last_resend and last_resend.tzinfo is None:
-            last_resend = last_resend.replace(tzinfo=timezone.utc)
-        if last_resend:
-            elapsed = (now - last_resend).total_seconds()
-            if elapsed < settings.REGISTRATION_RESEND_COOLDOWN_SECONDS:
-                remaining = int(settings.REGISTRATION_RESEND_COOLDOWN_SECONDS - elapsed)
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail=f"Please wait {remaining} seconds before requesting another verification code."
-                )
-
-    t_db = time.perf_counter()
-    db_ms = (t_db - t_start) * 1000
-
-    # 8. Generate cryptographically secure single-use OTP and hash password
-    otp_code = generate_secure_otp()
-    salt = generate_salt()
-    code_hash = hash_otp(otp_code, salt)
-    expires_at = now + timedelta(minutes=settings.REGISTRATION_OTP_EXPIRE_MINUTES)
+    # 6. Securely hash password (never plaintext)
     hashed_pwd = hash_password(payload.password)
 
-    # 9. Dispatch OTP to the applicant's email address before writing to database
-    t_email_start = time.perf_counter()
-    email_sent = await EmailService.send_verification_otp(
-        to_email=clean_email,
+    # 7. Create Student User Record (Role strictly STUDENT; active status; is_verified=False)
+    new_user = UserInDB(
+        id=str(uuid.uuid4()),
+        email=clean_email,
+        full_name=clean_name,
+        role=UserRole.STUDENT,
+        institution_id=clean_college,
         registration_number=clean_reg_no,
-        otp_code=otp_code,
-        expires_minutes=settings.REGISTRATION_OTP_EXPIRE_MINUTES
+        contact_number=clean_contact,
+        college_name=clean_college,
+        account_status=AccountStatus.ACTIVE,
+        is_verified=False,
+        hashed_password=hashed_pwd,
+        created_at=now,
+        updated_at=now
     )
-    email_ms = (time.perf_counter() - t_email_start) * 1000
 
-    if not email_sent:
-        logger.warning(
-            f"[TIMING] General registration email dispatch failed for {mask_email(clean_email)} after {email_ms:.1f}ms. "
-            f"Error: {EmailService.get_last_error()}"
-        )
+    try:
+        await users_col.insert_one(new_user.model_dump())
+    except pymongo.errors.DuplicateKeyError:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Unable to deliver verification code to your email at this time. Please try again shortly."
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email address or registration ID already exists."
         )
 
-    t_store_start = time.perf_counter()
-    # 10. Persist pending verification record upon confirmed dispatch (never plaintext password)
-    await verif_col.update_one(
-        {"email_normalized": clean_email, "registration_type": "external_student"},
-        {
-            "$set": {
-                "registration_type": "external_student",
-                "email_normalized": clean_email,
-                "full_name": clean_name,
-                "college_name": clean_college,
-                "college_reg_no": clean_reg_no,
-                "contact_number": clean_contact,
-                "hashed_password": hashed_pwd,
-                "code_hash": code_hash,
-                "salt": salt,
-                "attempt_count": 0,
-                "max_attempts": settings.REGISTRATION_OTP_MAX_ATTEMPTS,
-                "is_consumed": False,
-                "created_at": now,
-                "expires_at": expires_at,
-                "last_resend_at": now,
-                "client_ip_hash": client_ip_h,
-            }
-        },
-        upsert=True
+    # 8. Issue JWT access token for immediate session initiation
+    access_token = create_access_token(
+        subject=new_user.id,
+        email=new_user.email,
+        role=new_user.role.value,
+        institution_id=new_user.institution_id
     )
-    store_ms = (time.perf_counter() - t_store_start) * 1000
 
     total_ms = (time.perf_counter() - t_start) * 1000
     logger.info(
-        f"[TIMING] General registration initiation completed for {mask_email(clean_email)} | "
-        f"DB: {db_ms:.1f}ms | Email: {email_ms:.1f}ms | Store: {store_ms:.1f}ms | Total: {total_ms:.1f}ms"
+        f"General student account created for {mask_email(clean_email)} [{clean_college}] in {total_ms:.1f}ms without OTP"
     )
 
-    response_data = {
+    return {
         "status": "success",
-        "message": f"A single-use verification code has been dispatched to {clean_email}.",
-        "email": clean_email,
-        "resend_cooldown_seconds": settings.REGISTRATION_RESEND_COOLDOWN_SECONDS,
-        "expires_in_minutes": settings.REGISTRATION_OTP_EXPIRE_MINUTES
+        "message": "General student account created successfully. You can now log in.",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": UserResponse(
+            id=new_user.id,
+            email=new_user.email,
+            full_name=new_user.full_name,
+            role=new_user.role,
+            institution_id=new_user.institution_id,
+            registration_number=new_user.registration_number,
+            department=new_user.department,
+            batch_cohort=new_user.batch_cohort,
+            section=new_user.section,
+            contact_number=new_user.contact_number,
+            college_name=new_user.college_name,
+            account_status=new_user.account_status,
+            is_verified=new_user.is_verified,
+            created_at=new_user.created_at
+        )
     }
-    if settings.is_demo_otp_allowed:
-        response_data["demo_otp_hint"] = otp_code
-        response_data["demo_mode"] = True
-    return response_data
+
+
+@router.post("/general/register", status_code=status.HTTP_201_CREATED)
+async def register_general_student(
+    payload: GeneralStudentRegisterRequest,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """
+    Direct registration for General Students (Partner Colleges & Universities) without email OTP:
+    - Validates inputs, partner college allowlist, password complexity, duplicate checks.
+    - Hashes password securely.
+    - Immediately creates active Student account.
+    - Email verification is not required.
+    """
+    return await _execute_general_student_registration(payload, request, db)
+
+
+@router.post("/general/register/initiate", status_code=status.HTTP_200_OK)
+async def initiate_general_registration(
+    payload: GeneralStudentRegisterRequest,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """
+    Backward-compatible registration endpoint for General Students without email OTP.
+    Directly creates the active Student account.
+    """
+    return await _execute_general_student_registration(payload, request, db)
 
 
 @router.post("/general/register/resend")
@@ -1359,6 +1343,38 @@ async def complete_general_registration(
 
     verif_col = db["registration_verifications"]
     users_col = db["users"]
+
+    # Check if user was already registered via direct no-OTP flow
+    existing_user_doc = await users_col.find_one({"email": clean_email})
+    if existing_user_doc:
+        user = UserInDB(**existing_user_doc)
+        access_token = create_access_token(
+            subject=user.id,
+            email=user.email,
+            role=user.role.value,
+            institution_id=user.institution_id
+        )
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user=UserResponse(
+                id=user.id,
+                email=user.email,
+                full_name=user.full_name,
+                role=user.role,
+                institution_id=user.institution_id,
+                registration_number=user.registration_number,
+                department=user.department,
+                batch_cohort=user.batch_cohort,
+                section=user.section,
+                contact_number=user.contact_number,
+                college_name=user.college_name,
+                account_status=user.account_status,
+                is_verified=user.is_verified,
+                created_at=user.created_at
+            )
+        )
 
     # 1. Fetch active verification session
     verif_doc = await verif_col.find_one({

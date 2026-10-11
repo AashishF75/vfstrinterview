@@ -7,6 +7,7 @@ import {
   Eye,
   EyeOff,
   AlertCircle,
+  CheckCircle2,
   Loader2,
   ArrowLeft,
   ArrowRight,
@@ -111,6 +112,13 @@ export default function GeneralStudentLogin() {
 
         {/* Login Card */}
         <div className="w-full bg-[#0b1222] border border-slate-800/90 rounded-[18px] p-6 sm:p-7 shadow-2xl shadow-cyan-950/20 relative">
+          {location.state?.successMessage && (
+            <div className="mb-5 p-3 rounded-xl bg-emerald-950/40 border border-emerald-800/50 flex items-start space-x-2.5 text-xs text-emerald-300">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <div className="leading-relaxed text-[11px]">{location.state.successMessage}</div>
+            </div>
+          )}
+
           {error && (
             <div className="mb-5 p-3 rounded-xl bg-rose-950/40 border border-rose-800/50 flex items-start space-x-2.5 text-xs text-rose-300">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />

@@ -62,7 +62,7 @@ class CompleteRegistrationRequest(BaseModel):
         return self.verification_code.strip()
 
 
-class GeneralStudentInitiateRequest(BaseModel):
+class GeneralStudentRegisterRequest(BaseModel):
     full_name: str = Field(..., min_length=2, max_length=100)
     college_name: str = Field(..., min_length=2, max_length=150)
     college_reg_no: str = Field(..., min_length=2, max_length=50)
@@ -84,6 +84,9 @@ class GeneralStudentInitiateRequest(BaseModel):
 
     def get_clean_email(self) -> str:
         return str(self.email).strip().lower()
+
+
+GeneralStudentInitiateRequest = GeneralStudentRegisterRequest
 
 
 class GeneralStudentResendRequest(BaseModel):
