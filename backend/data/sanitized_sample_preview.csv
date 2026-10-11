@@ -1,0 +1,5 @@
+s_no,page,registration_number_raw,registration_number_normalized,student_name_raw,email_raw,processed_email,email_source,section,validation_status,issues
+1,1,241FA04000,241FA04000,SAMPLE STUDENT ONE,vu.241fa04000@gmail.com,vu.241fa04000@gmail.com,provided,1,VALID,
+2,1,241FA04001,241FA04001,SAMPLE STUDENT TWO,NA,vu.241fa04001@gmail.com,generated_pending_verification,1,GENERATED,
+3,1,241FA04002,241FA04002,SAMPLE STUDENT THREE,vu241fao4002@gmail.com,vu241fao4002@gmail.com,provided,1,FLAGGED_FOR_REVIEW,OCR/Typo anomaly: letter 'o' substituted for digit '0' in roll sequence within email; Inconsistent roll number in university email: email does not contain student registration number '241FA04002'
+4,1,241FA04003,241FA04003,SAMPLE STUDENT FOUR,student.custom.name@gmail.com,student.custom.name@gmail.com,provided,1,VALID,
