@@ -95,6 +95,67 @@ async def get_current_question(
     )
 
 
+from app.models.code_execution import (
+    RunCodeRequest,
+    RunCodeResponse,
+    SubmitCodeRequest,
+)
+
+
+@router.post("/sessions/{session_id}/run-code", response_model=RunCodeResponse)
+async def run_interview_code(
+    session_id: str,
+    data: RunCodeRequest,
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Executes candidate code in an isolated sandbox for the active coding question.
+    Runs against custom input or visible sample test cases.
+    Does not reveal hidden evaluation test cases or advance the session.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewSessionService.run_code(
+        db=db,
+        session_id=session_id,
+        student_user=current_student,
+        language=data.language,
+        source_code=data.source_code,
+        custom_input=data.custom_input,
+    )
+
+
+@router.post("/sessions/{session_id}/submit-code", response_model=SubmitAnswerResponse)
+async def submit_interview_code(
+    session_id: str,
+    data: SubmitCodeRequest,
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Submits a final coding solution for the active coding question.
+    Executes the full test suite (sample + hidden) in the sandbox,
+    evaluates correctness, records metrics, and advances session state.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewSessionService.submit_answer(
+        db=db,
+        session_id=session_id,
+        answer_text=data.source_code,
+        student_user=current_student,
+        language=data.language,
+        source_code=data.source_code,
+    )
+
+
 @router.post("/sessions/{session_id}/submit-answer", response_model=SubmitAnswerResponse)
 async def submit_answer(
     session_id: str,
@@ -115,8 +176,10 @@ async def submit_answer(
     return await InterviewSessionService.submit_answer(
         db=db,
         session_id=session_id,
-        answer_text=data.answer_text,
+        answer_text=data.answer_text or data.source_code or "",
         student_user=current_student,
+        language=data.language,
+        source_code=data.source_code,
     )
 
 

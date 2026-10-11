@@ -29,6 +29,17 @@ from app.services.ai_provider import (
     AIProviderUnavailableError,
     AIProviderError,
 )
+from app.models.code_execution import (
+    SupportedLanguage,
+    ExecutionStatus,
+    RunCodeResponse,
+    normalize_language_name,
+)
+from app.services.coding_challenge_service import CodingChallengeService
+from app.services.code_execution_service import (
+    CodeExecutionService,
+    ExecutionServiceUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,18 +66,22 @@ class InterviewSessionService:
     @staticmethod
     def _resolve_interview_role(assignment: Optional[Dict[str, Any]], interview: Optional[Dict[str, Any]]) -> Optional[str]:
         """Resolves target role for strict role-based question bank isolation."""
+        canon_map = {
+            "associate software engineer": "Associate Software Engineer",
+            "software development engineer": "Software Development Engineer",
+            "product engineer": "Product Engineer",
+            "system engineer": "System Engineer",
+            "testing engineer": "Testing Engineer",
+        }
         role = (assignment or {}).get("selected_role") or (interview or {}).get("role") or (interview or {}).get("target_role")
-        if role:
-            return role
+        if role and isinstance(role, str):
+            clean_role = role.strip().lower()
+            if clean_role in canon_map:
+                return canon_map[clean_role]
+            return role.strip()
         title = (interview or {}).get("title", "")
-        for canon in [
-            "Associate Software Engineer",
-            "Software Development Engineer",
-            "Product Engineer",
-            "System Engineer",
-            "Testing Engineer",
-        ]:
-            if canon.lower() in title.lower():
+        for canon_clean, canon in canon_map.items():
+            if canon_clean in title.lower():
                 return canon
         return None
 
@@ -207,6 +222,10 @@ class InterviewSessionService:
                     detail=f"Interview AI evaluator is unavailable: {str(exc)}",
                 )
 
+        coding_spec = None
+        if gen_q.get("question_type") == "coding":
+            coding_spec = CodingChallengeService.get_candidate_challenge_spec(gen_q["question_text"])
+
         session_doc = {
             "session_id": session_id,
             "interview_id": assignment["interview_id"],
@@ -230,6 +249,7 @@ class InterviewSessionService:
                 "topic": gen_q["topic"],
                 "difficulty": initial_diff.value,
                 "question_type": gen_q.get("question_type", "conceptual"),
+                "coding_spec": coding_spec,
             },
         }
 
@@ -265,6 +285,7 @@ class InterviewSessionService:
             question_text=gen_q["question_text"],
             topic=gen_q["topic"],
             question_type=gen_q.get("question_type", "conceptual"),
+            coding_spec=coding_spec,
             time_remaining_seconds=time_remaining,
             evaluator_mode=provider.get_mode().value,
         )
@@ -312,6 +333,10 @@ class InterviewSessionService:
         interview_title = interview.get("title", "University Interview") if interview else "University Interview"
 
         active_q = session.get("active_question", {})
+        coding_spec = active_q.get("coding_spec")
+        if active_q.get("question_type") == "coding" and not coding_spec:
+            coding_spec = CodingChallengeService.get_candidate_challenge_spec(active_q.get("question_text", ""))
+
         time_remaining = max(0, int((expires_at - now).total_seconds()))
         provider = get_ai_provider()
 
@@ -325,9 +350,85 @@ class InterviewSessionService:
             question_text=active_q.get("question_text", "Explain key networking concepts."),
             topic=active_q.get("topic", "Networking"),
             question_type=active_q.get("question_type", "conceptual"),
+            coding_spec=coding_spec,
             time_remaining_seconds=time_remaining,
             evaluator_mode=provider.get_mode().value,
         )
+
+    @staticmethod
+    async def run_code(
+        db: AsyncIOMotorDatabase,
+        session_id: str,
+        student_user: UserInDB,
+        language: str,
+        source_code: str,
+        custom_input: Optional[str] = None,
+    ) -> RunCodeResponse:
+        """
+        Executes code within isolated sandbox against custom input or sample visible test cases.
+        Hidden test cases are NEVER exposed.
+        """
+        clean_reg = (student_user.registration_number or "").strip().upper()
+        session = await db[SESSIONS_COLLECTION].find_one({"session_id": session_id})
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Interview session '{session_id}' not found",
+            )
+
+        if session.get("student_registration_number") != clean_reg:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You cannot run code in another student's session",
+            )
+
+        if session.get("session_status") != SessionStatus.IN_PROGRESS.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot run code: Session is already {session.get('session_status')}.",
+            )
+
+        now = utc_now()
+        expires_at = _ensure_utc(session.get("expires_at", now))
+        if now > expires_at:
+            await db[SESSIONS_COLLECTION].update_one(
+                {"session_id": session_id},
+                {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Interview session duration has expired.",
+            )
+
+        active_q = session.get("active_question", {})
+        if active_q.get("question_type") != "coding":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Active question is not a coding question.",
+            )
+
+        challenge = CodingChallengeService.resolve_challenge(active_q.get("question_text", ""))
+        sample_cases = challenge.get("sample_cases", [])
+
+        try:
+            return await CodeExecutionService.run_single_or_custom(
+                session_id=session_id,
+                language_str=language,
+                source_code=source_code,
+                custom_input=custom_input,
+                sample_test_cases=sample_cases,
+            )
+        except ValueError as err:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(err),
+            )
+        except ExecutionServiceUnavailableError as exc:
+            logger.error("Execution service error during run_code: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            )
 
     @staticmethod
     async def submit_answer(
@@ -335,16 +436,18 @@ class InterviewSessionService:
         session_id: str,
         answer_text: str,
         student_user: UserInDB,
+        language: Optional[str] = None,
+        source_code: Optional[str] = None,
     ) -> SubmitAnswerResponse:
         """
-        Submits candidate answer, evaluates response, adjusts difficulty adaptively,
+        Submits candidate answer or coding solution, evaluates response, adjusts difficulty adaptively,
         and either advances to next question or generates final scorecard.
         """
         clean_reg = (student_user.registration_number or "").strip().upper()
-        if not answer_text or not answer_text.strip():
+        if not (answer_text and answer_text.strip()) and not (source_code and source_code.strip()):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Answer text cannot be blank or whitespace only",
+                detail="Answer text or code cannot be blank or whitespace only",
             )
         session = await db[SESSIONS_COLLECTION].find_one({"session_id": session_id})
         if not session:
@@ -382,6 +485,9 @@ class InterviewSessionService:
         curr_diff = QuestionDifficulty(session.get("current_difficulty", "medium"))
         topic = active_q.get("topic", "Networking")
         question_text = active_q.get("question_text", "")
+        is_coding = active_q.get("question_type") == "coding"
+        code_to_eval = source_code or answer_text
+        code_execution_summary = None
 
         # Concurrency barrier: Check if this question was already submitted
         find_one_call = db[RESPONSES_COLLECTION].find_one(
@@ -394,23 +500,79 @@ class InterviewSessionService:
                 detail=f"Question {curr_q_index} has already been submitted for this session.",
             )
 
-        # 1. Evaluate answer using active provider
+        # 1. Evaluate answer
         provider = get_ai_provider()
-        try:
-            eval_result = await provider.evaluate_answer(
-                question=question_text,
-                answer=answer_text,
-                difficulty=curr_diff,
-                topic=topic,
-            )
-        except (AIProviderUnavailableError, AIProviderError) as exc:
-            logger.error("AI provider failure during answer evaluation: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"AI evaluation service is temporarily unavailable: {str(exc)}",
-            )
+        if is_coding:
+            try:
+                lang = normalize_language_name(language or "python")
+            except ValueError as err:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(err))
 
-        score = eval_result["score"]
+            eval_cases = CodingChallengeService.get_all_evaluation_cases(question_text)
+            try:
+                exec_status, passed_cnt, total_cnt, masked_results, compile_err = await CodeExecutionService.evaluate_full_test_suite(
+                    language=lang,
+                    source_code=code_to_eval,
+                    test_cases=eval_cases,
+                )
+            except ExecutionServiceUnavailableError as exc:
+                logger.error("Execution sandbox unavailable during solution submit: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Code execution sandbox is unavailable: {str(exc)}",
+                )
+
+            pass_rate = (passed_cnt / total_cnt) if total_cnt > 0 else 0.0
+            score = round(pass_rate * 10.0, 1)
+
+            if exec_status == ExecutionStatus.COMPILATION_ERROR:
+                feedback = f"Compilation failed: {compile_err or 'Syntax or build error'}. 0 of {total_cnt} test cases passed."
+                strengths = []
+                improvements = ["Fix compiler/syntax errors before resubmitting.", "Verify class declarations and imports."]
+            elif exec_status == ExecutionStatus.SUCCESS and passed_cnt == total_cnt:
+                feedback = f"All {total_cnt} evaluation test cases passed successfully! Algorithmic logic and constraints satisfied."
+                strengths = [f"Language: {lang.value.title()}", "Passed all boundary and edge test scenarios."]
+                improvements = ["Consider further optimizing space complexity if applicable."]
+            else:
+                feedback = f"{passed_cnt} of {total_cnt} evaluation test cases passed ({round(pass_rate * 100)}%). Partial solution."
+                strengths = [f"Language: {lang.value.title()}", f"Successfully resolved {passed_cnt} test scenarios."]
+                improvements = [f"{total_cnt - passed_cnt} test cases failed due to edge cases or incorrect output format."]
+
+            eval_result = {
+                "score": score,
+                "feedback": feedback,
+                "strengths": strengths,
+                "improvements": improvements,
+            }
+            code_execution_summary = {
+                "language": lang.value,
+                "status": exec_status.value,
+                "tests_passed": passed_cnt,
+                "tests_total": total_cnt,
+                "passed_test_cases": passed_cnt,
+                "total_test_cases": total_cnt,
+                "pass_percentage": round(pass_rate * 100.0, 1),
+                "pass_rate_percent": round(pass_rate * 100.0, 1),
+                "results": [r.model_dump() for r in masked_results],
+                "test_case_results": [r.model_dump() for r in masked_results],
+            }
+            evaluator_mode_str = "sandboxed_compiler"
+        else:
+            try:
+                eval_result = await provider.evaluate_answer(
+                    question=question_text,
+                    answer=answer_text,
+                    difficulty=curr_diff,
+                    topic=topic,
+                )
+            except (AIProviderUnavailableError, AIProviderError) as exc:
+                logger.error("AI provider failure during answer evaluation: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"AI evaluation service is temporarily unavailable: {str(exc)}",
+                )
+            score = eval_result["score"]
+            evaluator_mode_str = provider.get_mode().value
 
         # 2. Compute next difficulty adaptively
         next_diff, diff_rationale = AdaptiveDifficultyPolicy.determine_next_difficulty(
@@ -427,12 +589,16 @@ class InterviewSessionService:
             "difficulty": curr_diff.value,
             "topic": topic,
             "answer_text": answer_text,
+            "question_type": "coding" if is_coding else "conceptual",
+            "language": language if is_coding else None,
+            "source_code": source_code if is_coding else None,
+            "code_execution_summary": code_execution_summary,
             "evaluation_score": score,
             "evaluation_feedback": eval_result["feedback"],
             "strengths": eval_result.get("strengths", []),
             "improvements": eval_result.get("improvements", []),
             "difficulty_adjustment_rationale": diff_rationale,
-            "evaluator_mode": provider.get_mode().value,
+            "evaluator_mode": evaluator_mode_str,
             "evaluated_at": now,
             "created_at": now,
         }
@@ -569,7 +735,8 @@ class InterviewSessionService:
                 is_session_completed=True,
                 next_question=None,
                 scorecard_id=scorecard_id,
-                evaluator_mode=provider.get_mode().value,
+                evaluator_mode=evaluator_mode_str,
+                code_execution_summary=code_execution_summary,
             )
 
         # 4. Advance to next question
@@ -668,6 +835,10 @@ class InterviewSessionService:
                 detail=f"Question {curr_q_index} has already been submitted for this session.",
             )
 
+        coding_spec_next = None
+        if next_q_gen.get("question_type") == "coding":
+            coding_spec_next = CodingChallengeService.get_candidate_challenge_spec(next_q_gen["question_text"])
+
         await db[SESSIONS_COLLECTION].update_one(
             {"session_id": session_id},
             {
@@ -679,6 +850,7 @@ class InterviewSessionService:
                         "topic": next_q_gen["topic"],
                         "difficulty": next_diff.value,
                         "question_type": next_q_gen.get("question_type", target_type),
+                        "coding_spec": coding_spec_next,
                     },
                     "updated_at": now,
                 }
@@ -697,8 +869,9 @@ class InterviewSessionService:
             question_text=next_q_gen["question_text"],
             topic=next_q_gen["topic"],
             question_type=next_q_gen.get("question_type", target_type),
+            coding_spec=coding_spec_next,
             time_remaining_seconds=time_remaining,
-            evaluator_mode=provider.get_mode().value,
+            evaluator_mode=evaluator_mode_str,
         )
 
         return SubmitAnswerResponse(
@@ -713,7 +886,8 @@ class InterviewSessionService:
             is_session_completed=False,
             next_question=next_question_resp,
             scorecard_id=None,
-            evaluator_mode=provider.get_mode().value,
+            evaluator_mode=evaluator_mode_str,
+            code_execution_summary=code_execution_summary,
         )
 
     @staticmethod
@@ -780,6 +954,9 @@ class InterviewSessionService:
                 strengths=r.get("strengths", []),
                 improvements=r.get("improvements", []),
                 difficulty_adjustment_rationale=r.get("difficulty_adjustment_rationale", ""),
+                question_type=r.get("question_type", "conceptual"),
+                language=r.get("language"),
+                code_execution_summary=r.get("code_execution_summary"),
             )
             for r in raw_responses
         ]
@@ -869,6 +1046,11 @@ class InterviewSessionService:
         provider = get_ai_provider()
         time_remaining = max(0, int((expires_at - now).total_seconds()))
 
+        active_q = session.get("active_question") or {}
+        coding_spec = active_q.get("coding_spec")
+        if active_q.get("question_type") == "coding" and not coding_spec:
+            coding_spec = CodingChallengeService.get_candidate_challenge_spec(active_q.get("question_text", ""))
+
         return {
             "has_session": True,
             "session_id": session["session_id"],
@@ -876,9 +1058,17 @@ class InterviewSessionService:
             "interview_title": interview_title,
             "session_status": session["session_status"],
             "current_question_index": session.get("current_question_index", 1),
+            "question_index": session.get("current_question_index", 1),
             "total_questions_target": session.get("total_questions_target", 5),
+            "total_questions": session.get("total_questions_target", 5),
             "current_difficulty": session.get("current_difficulty", "medium"),
-            "active_question": session.get("active_question"),
+            "difficulty": session.get("current_difficulty", "medium"),
+            "question_text": active_q.get("question_text", ""),
+            "question": active_q.get("question_text", ""),
+            "topic": active_q.get("topic", interview_title),
+            "question_type": active_q.get("question_type", "conceptual"),
+            "coding_spec": coding_spec,
+            "active_question": active_q,
             "expires_at": session.get("expires_at").isoformat() if session.get("expires_at") else None,
             "time_remaining_seconds": time_remaining,
             "scorecard_id": session.get("scorecard_id") or session.get("final_scorecard_id"),

@@ -160,6 +160,18 @@ class Settings(BaseSettings):
     INTERVIEW_TOTAL_QUESTIONS_DEFAULT: int = 5
     ALLOW_MOCK_EVALUATOR_FALLBACK: Optional[bool] = None
 
+    # Sandboxed Code Execution Service Configuration (Judge0 Compatible API)
+    JUDGE0_API_URL: Optional[str] = None  # e.g. "https://judge0-ce.p.rapidapi.com" or "http://localhost:2358"
+    JUDGE0_API_KEY: Optional[str] = None  # RapidAPI Key or X-Auth-Token
+    JUDGE0_API_HOST: Optional[str] = None # e.g. "judge0-ce.p.rapidapi.com"
+    JUDGE0_AUTH_TOKEN: Optional[str] = None # e.g. X-Auth-Token for self-hosted Judge0 instances
+    CODE_EXECUTION_TIMEOUT_SECONDS: float = 12.0
+    CODE_EXECUTION_CPU_TIME_LIMIT: float = 5.0
+    CODE_EXECUTION_WALL_TIME_LIMIT: float = 10.0
+    CODE_EXECUTION_MEMORY_LIMIT_KB: int = 128000
+    CODE_EXECUTION_MAX_SOURCE_LENGTH: int = 65536
+    CODE_EXECUTION_MAX_INPUT_LENGTH: int = 16384
+
     @property
     def is_demo_otp_allowed(self) -> bool:
         """
@@ -237,6 +249,8 @@ class Settings(BaseSettings):
             "smtp_use_ssl": self.SMTP_USE_SSL,
             "smtp_use_tls": self.SMTP_USE_TLS,
             "has_smtp_credentials": bool(self.SMTP_USERNAME and self.SMTP_PASSWORD),
+            "has_judge0_configured": bool(self.JUDGE0_API_URL and self.JUDGE0_API_URL.strip()),
+            "judge0_api_url": self.JUDGE0_API_URL if self.JUDGE0_API_URL else None,
         }
 
     @model_validator(mode="before")
@@ -397,6 +411,24 @@ class Settings(BaseSettings):
                 "You must configure a secure, random JWT_SECRET_KEY in production."
             )
         return v
+
+    @field_validator("JUDGE0_API_URL")
+    @classmethod
+    def validate_judge0_url_in_production(cls, v: Optional[str]) -> Optional[str]:
+        if not v or not v.strip():
+            return None
+        clean_url = v.strip()
+        env = os.getenv("ENVIRONMENT", "development").lower()
+        is_prod = env in ("production", "prod") or bool(os.getenv("RENDER"))
+        if is_prod:
+            lowered = clean_url.lower()
+            if "localhost" in lowered or "127.0.0.1" in lowered or "0.0.0.0" in lowered:
+                raise ValueError(
+                    "Production configuration error: JUDGE0_API_URL cannot point to localhost or 127.0.0.1. "
+                    "In deployed production, configure a remotely reachable Judge0 URL "
+                    "(e.g. 'https://ce.judge0.com' or 'https://judge0-ce.p.rapidapi.com')."
+                )
+        return clean_url
 
     def __init__(self, **values):
         resolved_path, exists = resolve_env_file()

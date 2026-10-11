@@ -230,3 +230,116 @@ async def test_question_deduplication_within_session():
         {"title": "Product Engineer Technical Interview"}
     )
     assert inferred == "Product Engineer"
+
+
+from tests.test_general_student_e2e_flow import MockMongoDatabase
+
+
+@pytest.mark.anyio
+async def test_all_five_roles_first_question_and_progression_with_dual_compatibility():
+    """
+    Verify all five roles:
+    1. Associate Software Engineer
+    2. Software Development Engineer
+    3. Product Engineer
+    4. System Engineer
+    5. Testing Engineer
+    Confirms:
+    - Non-empty real question extracted from role-specific bank
+    - Both flat (question_text, topic) and nested (active_question) properties are returned
+    - Expected answer is never exposed
+    - Question progression advances to next question correctly without becoming blank
+    - get_session_by_assignment returns both flat and nested question fields
+    """
+    all_parsed = parse_question_file(ZIP_PATH, ZIP_PATH.name)
+    canonical_roles = [
+        "Associate Software Engineer",
+        "Software Development Engineer",
+        "Product Engineer",
+        "System Engineer",
+        "Testing Engineer",
+    ]
+
+    for role_name in canonical_roles:
+        student = make_student(f"241FA0400{canonical_roles.index(role_name) + 1}")
+        asgn_id = f"asgn-{role_name.lower().replace(' ', '-')}"
+        int_id = f"int-{role_name.lower().replace(' ', '-')}"
+
+        # Setup mock db with real questions for this role
+        role_questions = [q for q in all_parsed if q["role"] == role_name]
+        assert len(role_questions) >= 15
+
+        mock_db = MockMongoDatabase()
+        await mock_db["student_interview_assignments"].insert_one({
+            "assignment_id": asgn_id,
+            "interview_id": int_id,
+            "student_registration_number": student.registration_number,
+            "selected_role": role_name,
+            "status": AssignmentStatus.ACCEPTED.value,
+        })
+        await mock_db["university_interviews"].insert_one({
+            "interview_id": int_id,
+            "title": f"Adaptive Technical Interview — {role_name}",
+            "instructions": f"Mock interview for {role_name}",
+            "role": role_name,
+            "duration_minutes": 45,
+            "status": InterviewStatus.SCHEDULED.value,
+        })
+
+        for q in role_questions:
+            await mock_db["interview_questions"].insert_one(dict(q))
+
+        # 1. Start Session
+        start_res = await InterviewSessionService.start_session(
+            db=mock_db,
+            assignment_id=asgn_id,
+            student_user=student,
+        )
+
+        # Confirm non-empty question belonging to this role
+        assert start_res.question_text is not None and len(start_res.question_text) > 10
+        assert start_res.question == start_res.question_text
+        assert start_res.topic is not None and len(start_res.topic) > 0
+        assert start_res.question_type in ["conceptual", "coding"]
+        assert start_res.question_index == 1
+        assert start_res.total_questions == 5
+
+        # Confirm dual compatibility: active_question dictionary exists
+        assert start_res.active_question is not None
+        assert start_res.active_question["question_text"] == start_res.question_text
+        assert start_res.active_question["topic"] == start_res.topic
+        assert start_res.current_question_index == 1
+
+        # Confirm expected_answer is never exposed
+        dumped = start_res.model_dump()
+        assert "expected_answer" not in dumped
+
+        # 2. Verify get_session_by_assignment returns both flat and nested properties
+        session_info = await InterviewSessionService.get_session_by_assignment(
+            db=mock_db,
+            assignment_id=asgn_id,
+            student_user=student,
+        )
+        assert session_info["has_session"] is True
+        assert session_info["question_text"] == start_res.question_text
+        assert session_info["question"] == start_res.question_text
+        assert session_info["active_question"]["question_text"] == start_res.question_text
+        assert session_info["topic"] == start_res.topic
+
+        # 3. Advance to Next Question (Submit Answer)
+        submit_res = await InterviewSessionService.submit_answer(
+            db=mock_db,
+            session_id=start_res.session_id,
+            answer_text="Comprehensive architectural answer explaining protocols, latency, and data consistency models.",
+            student_user=student,
+        )
+        assert submit_res.is_session_completed is False
+        assert submit_res.next_question is not None
+
+        # Verify next question is non-empty, different from Q1, and has dual compatibility
+        nq = submit_res.next_question
+        assert nq.question_text is not None and len(nq.question_text) > 10
+        assert nq.question_text != start_res.question_text
+        assert nq.question_index == 2
+        assert nq.active_question is not None
+        assert nq.active_question["question_text"] == nq.question_text

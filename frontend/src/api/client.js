@@ -554,16 +554,50 @@ export const getCurrentQuestion = async (sessionId) => {
   }
 };
 
-export const submitInterviewAnswer = async (sessionId, answerText) => {
+export const submitInterviewAnswer = async (sessionId, answerText, language = null, sourceCode = null) => {
   try {
-    const response = await apiClient.post(`/api/interview-rooms/sessions/${sessionId}/submit-answer`, {
-      answer_text: answerText,
-    });
+    const payload = { answer_text: answerText };
+    if (language) payload.language = language;
+    if (sourceCode) payload.source_code = sourceCode;
+    const response = await apiClient.post(`/api/interview-rooms/sessions/${sessionId}/submit-answer`, payload);
     return { success: true, data: response.data };
   } catch (error) {
     return {
       success: false,
       error: error.response?.data?.detail || error.message || 'Failed to submit answer',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const runInterviewCode = async (sessionId, { language, source_code, custom_input = null }) => {
+  try {
+    const response = await apiClient.post(`/api/interview-rooms/sessions/${sessionId}/run-code`, {
+      language,
+      source_code,
+      custom_input,
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Code execution service failed',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const submitInterviewCode = async (sessionId, { language, source_code }) => {
+  try {
+    const response = await apiClient.post(`/api/interview-rooms/sessions/${sessionId}/submit-code`, {
+      language,
+      source_code,
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Code submission failed',
       status: error.response?.status,
     };
   }

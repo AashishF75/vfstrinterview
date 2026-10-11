@@ -10,6 +10,8 @@ from app.core.database import get_database, get_interview_database
 from app.models.user import UserRole, AccountStatus
 from app.models.interview import AssignmentStatus
 from app.models.interview_session import SessionStatus
+from app.models.code_execution import ExecutionStatus
+from app.services.code_execution_service import CodeExecutionService
 from app.services.email_service import EmailService
 
 
@@ -212,6 +214,23 @@ def capture_emails(monkeypatch):
 
     monkeypatch.setattr(EmailService, "send_verification_otp", fake_send)
     return sent
+
+
+@pytest.fixture(autouse=True)
+def mock_code_execution_for_flow(monkeypatch):
+    monkeypatch.setattr(CodeExecutionService, "is_provider_configured", classmethod(lambda cls: True))
+
+    async def fake_raw(*args, **kwargs):
+        return {
+            "status": ExecutionStatus.SUCCESS,
+            "stdout": "Mocked test output",
+            "stderr": None,
+            "compile_output": None,
+            "execution_time_ms": 15.0,
+            "memory_kb": 2048,
+        }
+
+    monkeypatch.setattr(CodeExecutionService, "execute_raw", fake_raw)
 
 
 @pytest.mark.anyio

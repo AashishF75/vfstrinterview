@@ -1,30 +1,32 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { 
+import {
   getAssignmentSession,
-  startInterviewSession, 
-  submitInterviewAnswer, 
+  startInterviewSession,
+  submitInterviewAnswer,
+  runInterviewCode,
+  submitInterviewCode,
   getSessionScorecard,
   recordProctoringEvents,
 } from '../api/client';
 import ProctoringPreflightModal from '../components/ProctoringPreflightModal';
 import ProctoringCameraWidget from '../components/ProctoringCameraWidget';
-import { 
-  Sparkles, 
-  Clock, 
-  AlertCircle, 
-  CheckCircle2, 
-  ArrowRight, 
-  RotateCcw, 
-  ChevronRight, 
-  Award, 
-  FileText, 
-  BrainCircuit, 
-  Zap, 
-  TrendingUp, 
-  TrendingDown, 
-  Minus, 
+import {
+  Sparkles,
+  Clock,
+  AlertCircle,
+  CheckCircle2,
+  ArrowRight,
+  RotateCcw,
+  ChevronRight,
+  Award,
+  FileText,
+  BrainCircuit,
+  Zap,
+  TrendingUp,
+  TrendingDown,
+  Minus,
   Send,
   ShieldAlert,
   ArrowLeft,
@@ -36,6 +38,12 @@ import {
   MicOff,
   Radio,
   Terminal,
+  Code,
+  Cpu,
+  PlayCircle,
+  CheckCircle,
+  XCircle,
+  Layers,
 } from 'lucide-react';
 
 export default function InterviewRoom() {
@@ -60,13 +68,19 @@ export default function InterviewRoom() {
   const [isCompleted, setIsCompleted] = useState(false);
   const [scorecard, setScorecard] = useState(null);
 
-  // Coding Question Language State
+  // Coding Question Language & Execution State
   const [selectedLanguage, setSelectedLanguage] = useState('Python');
+  const [runningCode, setRunningCode] = useState(false);
+  const [executionResult, setExecutionResult] = useState(null);
+  const [useCustomInput, setUseCustomInput] = useState(false);
+  const [customInputText, setCustomInputText] = useState('');
+  const [selectedTestCaseTab, setSelectedTestCaseTab] = useState(0);
 
   const CODE_TEMPLATES = {
-    Python: '# Python Solution\ndef solution():\n    # Write your solution code here\n    pass\n',
-    Java: '// Java Solution\npublic class Solution {\n    public static void main(String[] args) {\n        // Write your solution code here\n    }\n}\n',
+    Python: '# Python 3 Solution\ndef solution():\n    # Read input from standard input\n    # Write your solution logic here\n    pass\n\nif __name__ == "__main__":\n    solution()\n',
+    Java: '// Java Solution\nimport java.util.Scanner;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner scanner = new Scanner(System.in);\n        // Write your solution code here\n    }\n}\n',
     C: '// C Solution\n#include <stdio.h>\n\nint main() {\n    // Write your solution code here\n    return 0;\n}\n',
+    'C++': '// C++ Solution\n#include <iostream>\n#include <vector>\n#include <string>\n\nusing namespace std;\n\nint main() {\n    // Write your solution code here\n    return 0;\n}\n',
   };
 
   const handleLanguageSelect = (lang) => {
@@ -98,7 +112,7 @@ export default function InterviewRoom() {
   const recognitionRef = useRef(null);
 
   // Runtime check for SpeechRecognition support
-  const isSpeechRecognitionSupported = typeof window !== 'undefined' && 
+  const isSpeechRecognitionSupported = typeof window !== 'undefined' &&
     !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
   // --------------------------------------------------------------------------
@@ -267,7 +281,7 @@ export default function InterviewRoom() {
   // Speak authoritative question text in English
   const speakQuestion = useCallback((text) => {
     if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    
+
     // Cancel any active speech first
     window.speechSynthesis.cancel();
 
@@ -468,17 +482,35 @@ export default function InterviewRoom() {
     const checkRes = await getAssignmentSession(assignmentId);
     let sess = null;
 
-    if (checkRes.success && checkRes.data.has_session) {
+    if (checkRes.success && checkRes.data?.has_session) {
       sess = checkRes.data;
     } else {
       // Step B: No session exists yet, start a new attempt
       const startRes = await startInterviewSession(assignmentId);
       if (!startRes.success) {
-        setError(startRes.error || 'Failed to initialize interview session.');
-        setLoading(false);
-        return;
+        if (startRes.status === 409) {
+          const retryCheck = await getAssignmentSession(assignmentId);
+          if (retryCheck.success && retryCheck.data?.has_session) {
+            sess = retryCheck.data;
+          } else {
+            setError(startRes.error || 'Active interview session conflict encountered.');
+            setLoading(false);
+            return;
+          }
+        } else {
+          setError(startRes.error || 'Failed to initialize interview session.');
+          setLoading(false);
+          return;
+        }
+      } else {
+        sess = startRes.data;
       }
-      sess = startRes.data;
+    }
+
+    if (!sess) {
+      setError('Could not retrieve interview session data. Please try again.');
+      setLoading(false);
+      return;
     }
 
     setSessionId(sess.session_id);
@@ -500,34 +532,92 @@ export default function InterviewRoom() {
       return;
     }
 
-    // Set countdown timer based on expires_at
+    // Set countdown timer based on expires_at or time_remaining_seconds
     if (sess.expires_at) {
       const exp = new Date(sess.expires_at).getTime();
       const now = new Date().getTime();
       const diffSecs = Math.max(0, Math.floor((exp - now) / 1000));
       setSecondsRemaining(diffSecs);
+    } else if (sess.time_remaining_seconds != null) {
+      setSecondsRemaining(sess.time_remaining_seconds);
     }
 
-    // Set active question
-    if (sess.active_question) {
+    // Universal resolution of active question (supports both flat and nested schemas)
+    const qText =
+      sess.active_question?.question_text ||
+      sess.active_question?.question ||
+      sess.question_text ||
+      sess.question ||
+      '';
+
+    const qTopic =
+      sess.active_question?.topic ||
+      sess.topic ||
+      sess.interview_title ||
+      'Core Fundamentals';
+
+    const qDiff =
+      sess.active_question?.difficulty ||
+      sess.difficulty ||
+      sess.current_difficulty ||
+      'medium';
+
+    const qType =
+      sess.active_question?.question_type ||
+      sess.question_type ||
+      'conceptual';
+
+    const qIndex =
+      sess.question_index ??
+      sess.current_question_index ??
+      sess.active_question?.question_index ??
+      1;
+
+    const qTotal =
+      sess.total_questions ??
+      sess.total_questions_target ??
+      sess.active_question?.total_questions ??
+      5;
+
+    const qEvalMode =
+      sess.evaluator_mode ||
+      sess.active_question?.evaluator_mode ||
+      'mock_rule_engine';
+
+    const qTitle =
+      sess.interview_title ||
+      sess.active_question?.interview_title ||
+      '';
+
+    const qCodingSpec = sess.active_question?.coding_spec || sess.coding_spec || null;
+
+    if (qText) {
       setActiveQuestion({
         session_id: sess.session_id,
-        question_index: sess.current_question_index,
-        total_questions: sess.total_questions_target,
-        question_text: sess.active_question.question_text,
-        topic: sess.active_question.topic,
-        difficulty: sess.active_question.difficulty,
-        question_type: sess.active_question.question_type || 'conceptual',
-        evaluator_mode: sess.evaluator_mode,
-        interview_title: sess.interview_title,
+        question_index: qIndex,
+        total_questions: qTotal,
+        question_text: qText,
+        topic: qTopic,
+        difficulty: qDiff,
+        question_type: qType,
+        evaluator_mode: qEvalMode,
+        interview_title: qTitle,
+        coding_spec: qCodingSpec,
       });
-      if (sess.active_question.question_type === 'coding') {
-        setAnswerText(CODE_TEMPLATES['Python']);
+
+      setExecutionResult(null);
+      setUseCustomInput(false);
+      setCustomInputText('');
+
+      if (qType === 'coding') {
+        setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python']);
       }
+    } else {
+      setError('Unable to load question text for this interview. Please return to the dashboard or try again.');
     }
 
     setLoading(false);
-  }, [assignmentId]);
+  }, [assignmentId, selectedLanguage]);
 
   useEffect(() => {
     initSession();
@@ -561,9 +651,56 @@ export default function InterviewRoom() {
     return `${mins.toString().padStart(2, '0')}:${rem.toString().padStart(2, '0')}`;
   };
 
-  // Submit Answer
+  // Tab key indentation support in code editor
+  const handleEditorKeyDown = (e) => {
+    if (activeQuestion?.question_type === 'coding' && e.key === 'Tab') {
+      e.preventDefault();
+      const { selectionStart, selectionEnd } = e.target;
+      const val = answerText;
+      const tabSpaces = '    ';
+      setAnswerText(val.substring(0, selectionStart) + tabSpaces + val.substring(selectionEnd));
+      setTimeout(() => {
+        if (e.target) {
+          e.target.selectionStart = e.target.selectionEnd = selectionStart + tabSpaces.length;
+        }
+      }, 0);
+    }
+  };
+
+  // Run Code in isolated sandbox against custom input or sample visible test cases
+  const handleRunCode = async () => {
+    if (!sessionId || !activeQuestion || runningCode || !answerText.trim()) return;
+    setRunningCode(true);
+    setExecutionResult(null);
+
+    const lang = selectedLanguage.toLowerCase() === 'c++' ? 'cpp' : selectedLanguage.toLowerCase();
+    const payload = {
+      language: lang,
+      source_code: answerText,
+      custom_input: useCustomInput && customInputText.trim() ? customInputText : null,
+    };
+
+    const res = await runInterviewCode(sessionId, payload);
+    setRunningCode(false);
+
+    if (res.success) {
+      setExecutionResult(res.data);
+      setSelectedTestCaseTab(0);
+    } else {
+      setExecutionResult({
+        status: 'SERVICE_UNAVAILABLE',
+        message: res.error || 'Code execution service is currently unavailable.',
+        stderr: res.error,
+        test_case_results: [],
+        total_test_cases: 0,
+        passed_test_cases: 0,
+      });
+    }
+  };
+
+  // Submit Answer or Coding Solution
   const handleSubmitAnswer = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     if (!answerText.trim() || submitting || !sessionId) return;
 
     // Immediately stop audio speech and voice dictation on submit
@@ -576,11 +713,23 @@ export default function InterviewRoom() {
     setSubmitting(true);
     setError(null);
 
-    const res = await submitInterviewAnswer(sessionId, answerText.trim());
+    const isCoding = activeQuestion?.question_type === 'coding';
+    const lang = selectedLanguage.toLowerCase() === 'c++' ? 'cpp' : selectedLanguage.toLowerCase();
+
+    let res;
+    if (isCoding) {
+      res = await submitInterviewCode(sessionId, {
+        language: lang,
+        source_code: answerText.trim(),
+      });
+    } else {
+      res = await submitInterviewAnswer(sessionId, answerText.trim());
+    }
+
     setSubmitting(false);
 
     if (!res.success) {
-      setError(res.error || 'Failed to submit answer. Please try again.');
+      setError(res.error || 'Failed to submit solution. Please check compiler output or retry.');
       return;
     }
 
@@ -593,6 +742,7 @@ export default function InterviewRoom() {
       strengths: data.strengths ?? data.evaluation?.strengths ?? [],
       improvements: data.improvements ?? data.evaluation?.improvements ?? [],
       difficultyRationale: data.difficulty_rationale ?? data.difficulty_adjustment_rationale ?? '',
+      codeExecutionSummary: data.code_execution_summary ?? null,
       isFinal: data.is_session_completed,
     });
 
@@ -619,18 +769,54 @@ export default function InterviewRoom() {
       stopVoiceRecognition();
       setSpeechError(null);
       setInterimTranscript('');
+      setExecutionResult(null);
+      setUseCustomInput(false);
+      setCustomInputText('');
+
+      const nextText =
+        pendingNextQuestion.question_text ||
+        pendingNextQuestion.question ||
+        pendingNextQuestion.active_question?.question_text ||
+        pendingNextQuestion.active_question?.question ||
+        '';
+
+      const nextTopic =
+        pendingNextQuestion.topic ||
+        pendingNextQuestion.active_question?.topic ||
+        activeQuestion?.topic ||
+        'Core Fundamentals';
+
+      const nextDiff =
+        pendingNextQuestion.difficulty ||
+        pendingNextQuestion.active_question?.difficulty ||
+        'medium';
+
+      const nextType =
+        pendingNextQuestion.question_type ||
+        pendingNextQuestion.active_question?.question_type ||
+        'conceptual';
+
+      const nextIndex =
+        pendingNextQuestion.question_index ??
+        (activeQuestion?.question_index ? activeQuestion.question_index + 1 : 2);
+
+      const nextCodingSpec =
+        pendingNextQuestion.coding_spec ||
+        pendingNextQuestion.active_question?.coding_spec ||
+        null;
 
       setActiveQuestion((prev) => ({
         ...prev,
-        question_index: pendingNextQuestion.question_index,
-        question_text: pendingNextQuestion.question_text,
-        topic: pendingNextQuestion.topic,
-        difficulty: pendingNextQuestion.difficulty,
-        question_type: pendingNextQuestion.question_type || 'conceptual',
-        evaluator_mode: pendingNextQuestion.evaluator_mode,
+        question_index: nextIndex,
+        question_text: nextText,
+        topic: nextTopic,
+        difficulty: nextDiff,
+        question_type: nextType,
+        coding_spec: nextCodingSpec,
+        evaluator_mode: pendingNextQuestion.evaluator_mode || prev?.evaluator_mode,
       }));
-      if (pendingNextQuestion.question_type === 'coding') {
-        setAnswerText(CODE_TEMPLATES[selectedLanguage] || '');
+      if (nextType === 'coding') {
+        setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python'] || '');
       } else {
         setAnswerText('');
       }
@@ -690,24 +876,33 @@ export default function InterviewRoom() {
     );
   }
 
-  if (error && !activeQuestion && !scorecard) {
+  if (error && (!activeQuestion || !activeQuestion.question_text) && !scorecard) {
     return (
       <div className="min-h-screen bg-[#030712] text-slate-100 flex items-center justify-center p-4">
         <div className="glass-panel p-8 rounded-2xl border border-rose-900/50 text-center max-w-md w-full">
           <div className="w-12 h-12 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center mx-auto mb-4">
             <ShieldAlert className="w-6 h-6" />
           </div>
-          <h3 className="text-base font-semibold text-rose-300 mb-2">Session Access Restricted</h3>
+          <h3 className="text-base font-semibold text-rose-300 mb-2">Question Access Notice</h3>
           <p className="text-xs text-slate-300 leading-relaxed mb-6 bg-rose-950/40 p-3 rounded-lg border border-rose-900/40">
             {error}
           </p>
-          <Link
-            to="/dashboard"
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold inline-flex items-center space-x-2 transition"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Return to Dashboard</span>
-          </Link>
+          <div className="flex items-center justify-center gap-3">
+            <button
+              onClick={() => initSession()}
+              className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center space-x-2 transition"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Retry Session</span>
+            </button>
+            <Link
+              to="/dashboard"
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold inline-flex items-center space-x-2 transition"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Return to Dashboard</span>
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -919,8 +1114,8 @@ export default function InterviewRoom() {
               <span>Algorithmic Assessment Disclaimer</span>
             </div>
             <p>
-              {scorecard.disclaimer || 
-                scorecard.algorithmic_disclaimer || 
+              {scorecard.disclaimer ||
+                scorecard.algorithmic_disclaimer ||
                 "Score and feedback were computed using automated technical rubrics and adaptive difficulty thresholds. Evaluated on keyword precision, terminology depth, and protocol explanation structure. This assessment represents algorithmic interview practice and does not claim subjective human parity or absolute grading."}
             </p>
           </div>
@@ -994,10 +1189,10 @@ export default function InterviewRoom() {
         <div className="flex items-center justify-between pb-3 border-b border-slate-800/70">
           <div className="flex items-center space-x-2">
             <span className="text-xs font-mono font-bold text-indigo-400 uppercase tracking-wider">
-              Question {activeQuestion?.question_index} of {activeQuestion?.total_questions}
+              Question {activeQuestion?.question_index || 1} of {activeQuestion?.total_questions || 5}
             </span>
             <span className="text-slate-600">•</span>
-            <span className="text-xs text-slate-300 font-medium">Topic: {activeQuestion?.topic}</span>
+            <span className="text-xs text-slate-300 font-medium">Topic: {activeQuestion?.topic || 'Core Fundamentals'}</span>
             <span className="text-slate-600">•</span>
             {activeQuestion?.question_type === 'coding' ? (
               <span className="text-[11px] font-mono font-bold text-cyan-300 px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 flex items-center space-x-1">
@@ -1050,7 +1245,7 @@ export default function InterviewRoom() {
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
             <div className="flex items-center space-x-3">
               <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${
-                isSpeaking 
+                isSpeaking
                   ? 'bg-gradient-to-tr from-indigo-500 to-violet-500 text-white shadow-lg shadow-indigo-500/30 animate-pulse'
                   : 'bg-slate-800/80 text-indigo-400 border border-slate-700/60'
               }`}>
@@ -1117,7 +1312,7 @@ export default function InterviewRoom() {
                 onClick={handleToggleMute}
                 id="toggle-mute-audio-btn"
                 className={`p-2 rounded-lg text-xs font-semibold border transition ${
-                  isMuted 
+                  isMuted
                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
                     : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                 }`}
@@ -1159,178 +1354,486 @@ export default function InterviewRoom() {
             </div>
 
             <div className="p-4 rounded-xl bg-slate-950/90 border border-slate-800 text-slate-100 text-sm sm:text-base leading-relaxed font-medium transition-all">
-              {activeQuestion?.question_text}
+              {activeQuestion?.question_text || (
+                <div className="flex items-center space-x-2 text-rose-400 text-xs py-1">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>Interview question could not be loaded. Please click Retry below or refresh.</span>
+                </div>
+              )}
             </div>
 
-            <p className="text-xs text-slate-400 italic">
-              Instructions: Provide a structured, technical response explaining protocol mechanics, packet flows, or architecture where applicable.
-            </p>
+            {activeQuestion?.question_type === 'coding' ? (
+              <p className="text-xs text-cyan-400 font-mono">
+                Coding Assessment: Write and execute your solution in <strong>{selectedLanguage}</strong>. Use "Run Code" to test against sample test cases in the isolated sandbox, then click "Submit Solution" for full automated evaluation.
+              </p>
+            ) : (
+              <p className="text-xs text-slate-400 italic">
+                Instructions: Provide a structured, technical response explaining protocol mechanics, packet flows, or architecture where applicable.
+              </p>
+            )}
+
+            {/* Problem Specifications & Sample Test Cases (For Coding Questions) */}
+            {activeQuestion?.question_type === 'coding' && activeQuestion?.coding_spec && (
+              <div className="mt-4 p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-3 animate-in fade-in text-xs">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
+                  <span className="font-mono font-bold text-cyan-300 flex items-center space-x-1.5">
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Problem Specifications & Constraints</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    Sandboxed Evaluation Suite: {activeQuestion.coding_spec.total_evaluation_test_cases || 5} Cases
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-300">
+                  <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80">
+                    <span className="block font-bold text-slate-400 text-[11px] uppercase tracking-wider mb-1">Input Format</span>
+                    <p className="font-mono text-slate-200 whitespace-pre-line">{activeQuestion.coding_spec.input_format}</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80">
+                    <span className="block font-bold text-slate-400 text-[11px] uppercase tracking-wider mb-1">Output Format</span>
+                    <p className="font-mono text-slate-200 whitespace-pre-line">{activeQuestion.coding_spec.output_format}</p>
+                  </div>
+                </div>
+
+                {activeQuestion.coding_spec.constraints && (
+                  <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80 font-mono text-[11px] text-slate-300">
+                    <strong className="text-slate-400 uppercase tracking-wider mr-2">Constraints:</strong>
+                    <span>{activeQuestion.coding_spec.constraints}</span>
+                  </div>
+                )}
+
+                {/* Visible Sample Test Cases */}
+                {activeQuestion.coding_spec.sample_test_cases && activeQuestion.coding_spec.sample_test_cases.length > 0 && (
+                  <div className="space-y-2 pt-1">
+                    <span className="block font-bold text-slate-400 text-[11px] uppercase tracking-wider">
+                      Sample Test Cases:
+                    </span>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                      {activeQuestion.coding_spec.sample_test_cases.map((sc, sIdx) => (
+                        <div key={sIdx} className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] space-y-1.5">
+                          <div className="text-indigo-400 font-bold">Sample Case {sc.test_case_index}:</div>
+                          <div className="text-slate-400">
+                            <strong>Input:</strong> <span className="text-slate-200">{sc.input_data.replace(/\n/g, ' ')}</span>
+                          </div>
+                          <div className="text-slate-400">
+                            <strong>Expected Output:</strong> <span className="text-emerald-400">{sc.expected_output.replace(/\n/g, ' ')}</span>
+                          </div>
+                          {sc.explanation && (
+                            <div className="text-slate-500 text-[10px] italic">Note: {sc.explanation}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
         {/* Response Workspace */}
         <form onSubmit={handleSubmitAnswer} className="space-y-4 flex-1 flex flex-col justify-between">
-          <div className="space-y-2 flex-1">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-              <div className="flex items-center space-x-2">
-                <label htmlFor="student-answer" className="font-semibold text-slate-300">
-                  Your Technical Response:
-                </label>
+          <div className="space-y-3 flex-1">
+            {activeQuestion?.question_type === 'coding' ? (
+              /* Coding Workspace Controls */
+              <div className="space-y-3">
+                {/* Compiler Toolbar */}
+                <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+                  <div className="flex items-center flex-wrap gap-2">
+                    <span className="text-xs font-medium text-slate-300 flex items-center space-x-1.5 mr-1">
+                      <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Language:</span>
+                    </span>
+                    {['Python', 'Java', 'C', 'C++'].map((lang) => (
+                      <button
+                        key={lang}
+                        type="button"
+                        onClick={() => handleLanguageSelect(lang)}
+                        disabled={submitting || runningCode}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold transition ${
+                          selectedLanguage === lang
+                            ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/30'
+                            : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                        }`}
+                      >
+                        {lang}
+                      </button>
+                    ))}
 
-                {/* Speech Recognition Voice Input Toggle Button */}
-                {isSpeechRecognitionSupported ? (
-                  <button
-                    type="button"
-                    onClick={handleToggleVoiceInput}
-                    id="toggle-voice-input-btn"
-                    disabled={submitting || !!lastEvaluation}
-                    className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition ${
-                      isListening
-                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30 animate-pulse'
-                        : 'bg-indigo-950/60 text-indigo-300 border border-indigo-800/60 hover:bg-indigo-900/60'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                    title={isListening ? "Stop voice dictation" : "Start speaking response in English"}
-                    aria-label={isListening ? "Stop voice input" : "Start voice input in English"}
-                  >
-                    {isListening ? (
-                      <>
-                        <MicOff className="w-3.5 h-3.5 text-rose-400" />
-                        <span>Stop Voice Input</span>
-                      </>
-                    ) : (
-                      <>
-                        <Mic className="w-3.5 h-3.5 text-indigo-400" />
-                        <span>Voice Input (en-US)</span>
-                      </>
-                    )}
-                  </button>
-                ) : (
-                  <span className="text-[11px] text-slate-500 font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800" title="Web Speech Recognition is not supported by this browser engine">
-                    Voice Dictation Unsupported (Manual Typing Active)
-                  </span>
-                )}
-              </div>
+                    <span className="text-slate-700 mx-1">|</span>
 
-              <div className="flex items-center space-x-3 font-mono text-[11px]">
-                <span className={wordCount >= 25 ? 'text-emerald-400' : 'text-slate-400'}>
-                  {wordCount} words {wordCount >= 25 ? '✓ (Good depth)' : '(25+ recommended)'}
-                </span>
-                <span>{answerText.length} characters</span>
-              </div>
-            </div>
-
-            {/* Active Listening Status Indicator */}
-            {isListening && (
-              <div className="p-2.5 rounded-lg bg-rose-950/30 border border-rose-900/50 text-xs text-rose-300 flex items-center justify-between gap-2 animate-in fade-in">
-                <div className="flex items-center space-x-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
-                  <span className="font-medium">Listening... Speak your answer clearly in English. Recognized text is added to your response.</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={stopVoiceRecognition}
-                  className="px-2 py-0.5 rounded bg-rose-900/60 hover:bg-rose-800/60 text-[11px] font-semibold text-rose-200"
-                >
-                  Done Speaking
-                </button>
-              </div>
-            )}
-
-            {/* Interim Transcript Preview */}
-            {interimTranscript && (
-              <div className="p-2 rounded-lg bg-indigo-950/40 border border-indigo-900/50 text-xs font-mono text-indigo-300 flex items-center space-x-2 animate-in fade-in">
-                <span className="text-[10px] uppercase font-bold text-indigo-400">Capturing:</span>
-                <span className="italic">"{interimTranscript}"</span>
-              </div>
-            )}
-
-            {/* Non-destructive Microphone Error Banner */}
-            {speechError && (
-              <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-900/50 text-xs text-amber-300 flex items-center justify-between gap-2 animate-in fade-in">
-                <div className="flex items-center space-x-2">
-                  <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <span>{speechError}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSpeechError(null)}
-                  className="text-amber-400 hover:text-white text-xs px-2 py-0.5 rounded bg-amber-950/50 border border-amber-900/60"
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
-
-            {/* Coding Language Selector when question is coding type */}
-            {activeQuestion?.question_type === 'coding' && (
-              <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-3 mb-2">
-                <div className="flex items-center space-x-2">
-                  <span className="text-xs font-medium text-slate-300 flex items-center space-x-1">
-                    <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Programming Language:</span>
-                  </span>
-                  {['Python', 'Java', 'C'].map((lang) => (
                     <button
-                      key={lang}
                       type="button"
-                      onClick={() => handleLanguageSelect(lang)}
-                      className={`px-3 py-1 rounded-lg text-xs font-mono font-semibold transition ${
-                        selectedLanguage === lang
-                          ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/30'
-                          : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                      onClick={() => setUseCustomInput(!useCustomInput)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono transition border ${
+                        useCustomInput
+                          ? 'bg-indigo-950/80 text-indigo-300 border-indigo-700 font-semibold'
+                          : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-slate-200'
                       }`}
                     >
-                      {lang}
+                      {useCustomInput ? '✓ Custom Input Active' : '+ Custom Input (stdin)'}
                     </button>
-                  ))}
+                  </div>
+
+                  {/* Sandbox Run & Submit Buttons */}
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={handleRunCode}
+                      id="run-code-btn"
+                      disabled={runningCode || submitting || !answerText.trim()}
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800/60 hover:border-cyan-600 text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {runningCode ? (
+                        <>
+                          <RotateCcw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                          <span>Executing Sandbox...</span>
+                        </>
+                      ) : (
+                        <>
+                          <PlayCircle className="w-4 h-4 text-cyan-400" />
+                          <span>Run Code</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="submit"
+                      id="submit-solution-btn"
+                      disabled={submitting || runningCode || !answerText.trim()}
+                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md shadow-emerald-600/20 transition flex items-center space-x-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {submitting ? (
+                        <>
+                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Evaluating Solution...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Submit Solution</span>
+                          <Send className="w-3.5 h-3.5" />
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <span className="text-[11px] text-slate-400 font-mono">
-                  Environment: <strong className="text-cyan-300">{selectedLanguage}</strong>
-                </span>
-              </div>
-            )}
 
-            <textarea
-              id="student-answer"
-              rows={8}
-              value={answerText}
-              onChange={(e) => setAnswerText(e.target.value)}
-              disabled={submitting || !!lastEvaluation}
-              placeholder={
-                activeQuestion?.question_type === 'coding'
-                  ? `Write your ${selectedLanguage} implementation and algorithmic explanation here...`
-                  : "Speak or type your explanation here. You can use voice input above or type manually. Be specific with technical architecture, operational mechanisms, and design trade-offs..."
-              }
-              className="w-full rounded-xl bg-slate-950/80 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-100 placeholder-slate-600 text-xs font-mono p-4 resize-none transition leading-relaxed disabled:opacity-50"
-            />
-          </div>
+                {/* Code Editor */}
+                <div className="relative rounded-xl border border-slate-800 overflow-hidden bg-slate-950 shadow-inner">
+                  <div className="flex items-center justify-between px-3.5 py-1.5 bg-slate-900 border-b border-slate-800 text-[11px] font-mono text-slate-400">
+                    <div className="flex items-center space-x-2">
+                      <Code className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>{selectedLanguage} Editor (Tab Key Indentation Supported)</span>
+                    </div>
+                    <span>{answerText.length} characters</span>
+                  </div>
+                  <textarea
+                    id="student-answer"
+                    rows={12}
+                    value={answerText}
+                    onChange={(e) => setAnswerText(e.target.value)}
+                    onKeyDown={handleEditorKeyDown}
+                    disabled={submitting || !!lastEvaluation}
+                    placeholder={`Write your ${selectedLanguage} solution here...`}
+                    className="w-full bg-slate-950 text-slate-100 placeholder-slate-600 text-xs font-mono p-4 resize-y outline-none leading-relaxed focus:ring-1 focus:ring-cyan-500 disabled:opacity-50"
+                  />
+                </div>
 
-          {/* Submit Action */}
-          {!lastEvaluation && (
-            <div className="flex items-center justify-between pt-2">
-              <span className="text-[11px] text-slate-500">
-                Once submitted, your response will be evaluated immediately by the adaptive rubric engine.
-              </span>
-              <button
-                type="submit"
-                id="submit-answer-btn"
-                disabled={submitting || !answerText.trim()}
-                className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {submitting ? (
-                  <>
-                    <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Evaluating Response...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Submit Response</span>
-                    <Send className="w-3.5 h-3.5" />
-                  </>
+                {/* Custom Input Field (stdin) */}
+                {useCustomInput && (
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 animate-in fade-in">
+                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+                      <span className="font-semibold text-slate-300">Custom Input (stdin):</span>
+                      <span>Passed directly to program during "Run Code"</span>
+                    </div>
+                    <textarea
+                      rows={3}
+                      value={customInputText}
+                      onChange={(e) => setCustomInputText(e.target.value)}
+                      placeholder="Enter custom input lines here..."
+                      className="w-full rounded-lg bg-slate-900/90 border border-slate-800 text-slate-200 text-xs font-mono p-3 resize-none focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
                 )}
-              </button>
-            </div>
-          )}
+
+                {/* Execution & Test Results Panel */}
+                {executionResult && (
+                  <div className="p-4 rounded-xl glass-panel border border-slate-800 bg-slate-950/95 space-y-3 animate-in fade-in">
+                    <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-800/80">
+                      <div className="flex items-center space-x-2.5">
+                        <span className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400">Execution Result:</span>
+                        <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold flex items-center space-x-1 ${
+                          executionResult.status === 'SUCCESS'
+                            ? 'bg-emerald-950 text-emerald-300 border border-emerald-800/80'
+                            : executionResult.status === 'WRONG_ANSWER'
+                            ? 'bg-amber-950 text-amber-300 border border-amber-800/80'
+                            : 'bg-rose-950 text-rose-300 border border-rose-800/80'
+                        }`}>
+                          {executionResult.status === 'SUCCESS' ? (
+                            <>
+                              <CheckCircle className="w-3 h-3 text-emerald-400" />
+                              <span>Accepted</span>
+                            </>
+                          ) : executionResult.status === 'WRONG_ANSWER' ? (
+                            <>
+                              <XCircle className="w-3 h-3 text-amber-400" />
+                              <span>Wrong Answer</span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertCircle className="w-3 h-3 text-rose-400" />
+                              <span>{executionResult.status.replace('_', ' ')}</span>
+                            </>
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center space-x-3 text-xs font-mono text-slate-400">
+                        {executionResult.execution_time_ms != null && (
+                          <span>Runtime: <strong className="text-cyan-300">{executionResult.execution_time_ms} ms</strong></span>
+                        )}
+                        {executionResult.total_test_cases > 0 && (
+                          <span className={executionResult.passed_test_cases === executionResult.total_test_cases ? 'text-emerald-400' : 'text-amber-400'}>
+                            Sample Tests: <strong>{executionResult.passed_test_cases} / {executionResult.total_test_cases} Passed</strong>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Compilation Errors Output */}
+                    {(executionResult.compile_output || (executionResult.status === 'COMPILATION_ERROR' && executionResult.stderr)) && (
+                      <div className="p-3 rounded-lg bg-rose-950/30 border border-rose-900/60 font-mono text-xs text-rose-300 space-y-1">
+                        <div className="font-bold text-rose-400 flex items-center space-x-1">
+                          <AlertCircle className="w-3.5 h-3.5" />
+                          <span>Compiler / Build Error:</span>
+                        </div>
+                        <pre className="whitespace-pre-wrap overflow-x-auto text-[11px] leading-relaxed">
+                          {executionResult.compile_output || executionResult.stderr}
+                        </pre>
+                      </div>
+                    )}
+
+                    {/* Runtime Errors Output */}
+                    {executionResult.status === 'RUNTIME_ERROR' && executionResult.stderr && (
+                      <div className="p-3 rounded-lg bg-rose-950/30 border border-rose-900/60 font-mono text-xs text-rose-300 space-y-1">
+                        <div className="font-bold text-rose-400">Runtime Exception:</div>
+                        <pre className="whitespace-pre-wrap overflow-x-auto text-[11px] leading-relaxed">
+                          {executionResult.stderr}
+                        </pre>
+                      </div>
+                    )}
+
+                    {/* Test Case Tab Selector */}
+                    {executionResult.test_case_results && executionResult.test_case_results.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex items-center space-x-2">
+                          {executionResult.test_case_results.map((tc, tcIdx) => (
+                            <button
+                              key={tcIdx}
+                              type="button"
+                              onClick={() => setSelectedTestCaseTab(tcIdx)}
+                              className={`px-3 py-1 rounded text-xs font-mono font-medium flex items-center space-x-1.5 transition ${
+                                selectedTestCaseTab === tcIdx
+                                  ? 'bg-slate-800 text-white border border-slate-700 shadow-sm'
+                                  : 'bg-slate-950/60 text-slate-400 hover:text-slate-200 border border-slate-900'
+                              }`}
+                            >
+                              <span className={`w-2 h-2 rounded-full ${tc.passed ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                              <span>Case {tc.test_case_index}</span>
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Selected Test Case Details */}
+                        {executionResult.test_case_results[selectedTestCaseTab] && (
+                          <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800 font-mono text-xs space-y-2">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                              <div>
+                                <span className="text-slate-400 block mb-0.5">Input:</span>
+                                <div className="p-2 rounded bg-slate-950 text-slate-200 border border-slate-800">
+                                  {executionResult.test_case_results[selectedTestCaseTab].input_data || '(none)'}
+                                </div>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block mb-0.5">Expected Output:</span>
+                                <div className="p-2 rounded bg-slate-950 text-emerald-400 border border-slate-800">
+                                  {executionResult.test_case_results[selectedTestCaseTab].expected_output || '(none)'}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div>
+                              <span className="text-slate-400 block mb-0.5 text-[11px]">Program Actual Output:</span>
+                              <div className={`p-2 rounded bg-slate-950 border ${
+                                executionResult.test_case_results[selectedTestCaseTab].passed
+                                  ? 'text-emerald-300 border-slate-800'
+                                  : 'text-rose-300 border-rose-900/60'
+                              }`}>
+                                {executionResult.test_case_results[selectedTestCaseTab].actual_output || '(no stdout output)'}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Custom Input Output Block */}
+                    {executionResult.total_test_cases === 0 && (
+                      <div className="space-y-2 font-mono text-xs">
+                        {executionResult.stdout && (
+                          <div>
+                            <span className="text-slate-400 block mb-0.5 text-[11px]">Standard Output (stdout):</span>
+                            <pre className="p-2.5 rounded bg-slate-900 border border-slate-800 text-slate-200 whitespace-pre-wrap overflow-x-auto text-[11px]">
+                              {executionResult.stdout}
+                            </pre>
+                          </div>
+                        )}
+                        {executionResult.stderr && executionResult.status !== 'COMPILATION_ERROR' && (
+                          <div>
+                            <span className="text-rose-400 block mb-0.5 text-[11px]">Standard Error (stderr):</span>
+                            <pre className="p-2.5 rounded bg-rose-950/20 border border-rose-900/50 text-rose-300 whitespace-pre-wrap overflow-x-auto text-[11px]">
+                              {executionResult.stderr}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Conceptual Response Workspace */
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+                  <div className="flex items-center space-x-2">
+                    <label htmlFor="student-answer" className="font-semibold text-slate-300">
+                      Your Technical Response:
+                    </label>
+
+                    {/* Speech Recognition Voice Input Toggle Button */}
+                    {isSpeechRecognitionSupported ? (
+                      <button
+                        type="button"
+                        onClick={handleToggleVoiceInput}
+                        id="toggle-voice-input-btn"
+                        disabled={submitting || !!lastEvaluation}
+                        className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition ${
+                          isListening
+                            ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30 animate-pulse'
+                            : 'bg-indigo-950/60 text-indigo-300 border border-indigo-800/60 hover:bg-indigo-900/60'
+                        } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        title={isListening ? "Stop voice dictation" : "Start speaking response in English"}
+                        aria-label={isListening ? "Stop voice input" : "Start voice input in English"}
+                      >
+                        {isListening ? (
+                          <>
+                            <MicOff className="w-3.5 h-3.5 text-rose-400" />
+                            <span>Stop Voice Input</span>
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>Voice Input (en-US)</span>
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-slate-500 font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800" title="Web Speech Recognition is not supported by this browser engine">
+                        Voice Dictation Unsupported (Manual Typing Active)
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center space-x-3 font-mono text-[11px]">
+                    <span className={wordCount >= 25 ? 'text-emerald-400' : 'text-slate-400'}>
+                      {wordCount} words {wordCount >= 25 ? '✓ (Good depth)' : '(25+ recommended)'}
+                    </span>
+                    <span>{answerText.length} characters</span>
+                  </div>
+                </div>
+
+                {/* Active Listening Status Indicator */}
+                {isListening && (
+                  <div className="p-2.5 rounded-lg bg-rose-950/30 border border-rose-900/50 text-xs text-rose-300 flex items-center justify-between gap-2 animate-in fade-in">
+                    <div className="flex items-center space-x-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
+                      <span className="font-medium">Listening... Speak your answer clearly in English. Recognized text is added to your response.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={stopVoiceRecognition}
+                      className="px-2 py-0.5 rounded bg-rose-900/60 hover:bg-rose-800/60 text-[11px] font-semibold text-rose-200"
+                    >
+                      Done Speaking
+                    </button>
+                  </div>
+                )}
+
+                {/* Interim Transcript Preview */}
+                {interimTranscript && (
+                  <div className="p-2 rounded-lg bg-indigo-950/40 border border-indigo-900/50 text-xs font-mono text-indigo-300 flex items-center space-x-2 animate-in fade-in">
+                    <span className="text-[10px] uppercase font-bold text-indigo-400">Capturing:</span>
+                    <span className="italic">"{interimTranscript}"</span>
+                  </div>
+                )}
+
+                {/* Non-destructive Microphone Error Banner */}
+                {speechError && (
+                  <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-900/50 text-xs text-amber-300 flex items-center justify-between gap-2 animate-in fade-in">
+                    <div className="flex items-center space-x-2">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>{speechError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSpeechError(null)}
+                      className="text-amber-400 hover:text-white text-xs px-2 py-0.5 rounded bg-amber-950/50 border border-amber-900/60"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+
+                <textarea
+                  id="student-answer"
+                  rows={8}
+                  value={answerText}
+                  onChange={(e) => setAnswerText(e.target.value)}
+                  disabled={submitting || !!lastEvaluation}
+                  placeholder="Speak or type your explanation here. You can use voice input above or type manually. Be specific with technical architecture, operational mechanisms, and design trade-offs..."
+                  className="w-full rounded-xl bg-slate-950/80 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-100 placeholder-slate-600 text-xs font-mono p-4 resize-none transition leading-relaxed disabled:opacity-50"
+                />
+
+                {/* Conceptual Submit Action */}
+                {!lastEvaluation && (
+                  <div className="flex items-center justify-between pt-2">
+                    <span className="text-[11px] text-slate-500">
+                      Once submitted, your response will be evaluated immediately by the adaptive rubric engine.
+                    </span>
+                    <button
+                      type="submit"
+                      id="submit-answer-btn"
+                      disabled={submitting || !answerText.trim()}
+                      className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {submitting ? (
+                        <>
+                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Evaluating Response...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Submit Response</span>
+                          <Send className="w-3.5 h-3.5" />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </form>
 
         {/* Immediate Evaluation Feedback Drawer */}
