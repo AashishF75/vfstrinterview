@@ -69,6 +69,6 @@ backend/data/eligibility_preview.json
 backend/data/eligibility_preview.csv
 backend/data/flagged_records_resolution.json
 backend/data/flagged_roster_resolution_report.md
-!backend/data/sanitized_sample_preview.json
-!backend/data/sanitized_sample_preview.csv
+backend/data/sanitized_sample_preview.json
+backend/data/sanitized_sample_preview.csv
 
