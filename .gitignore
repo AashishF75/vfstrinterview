@@ -71,4 +71,6 @@ backend/data/flagged_records_resolution.json
 backend/data/flagged_roster_resolution_report.md
 backend/data/sanitized_sample_preview.json
 backend/data/sanitized_sample_preview.csv
+backend/data/import_recovery_*.json
+backend/data/problem_statement_3_additional_25_sets_per_role_PDFs.zip
 

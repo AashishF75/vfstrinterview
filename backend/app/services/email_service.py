@@ -1,11 +1,16 @@
 import logging
 import smtplib
+import ssl
+import socket
+import asyncio
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timezone
 
 from app.core.config import settings
+from app.services.verification_service import mask_registration_number
 
 logger = logging.getLogger(__name__)
 
@@ -21,27 +26,121 @@ def mask_email(email: str) -> str:
     return f"{masked_local}@{domain}"
 
 
-from app.services.verification_service import mask_registration_number
-
-
 class DemoMockEmailAdapter:
     """
-    Demo / Mock email dispatch adapter.
-    Captures verification messages in an in-memory test buffer.
-    Outbound SMTP transmission is strictly disabled by default for demos.
-    Never logs plaintext verification codes or passwords.
+    Email dispatch service with dual-mode operational support:
+    1. Demo/Test Mode: Records dispatched messages in in-memory test buffer.
+    2. Live Production SMTP: Executes non-blocking delivery in a worker thread pool,
+       supporting Port 587 (STARTTLS), Port 465 (SMTPS), and automatic Gmail port fallback.
+    Never logs plaintext verification codes, passwords, or SMTP secrets.
     """
 
     # In-memory buffer for testing and demo verification
     _test_inbox: List[Dict[str, Any]] = []
+    _last_error: Optional[str] = None
 
     @classmethod
     def clear_test_inbox(cls):
         cls._test_inbox.clear()
+        cls._last_error = None
 
     @classmethod
     def get_test_inbox(cls) -> List[Dict[str, Any]]:
         return list(cls._test_inbox)
+
+    @classmethod
+    def get_last_error(cls) -> Optional[str]:
+        return cls._last_error
+
+    @classmethod
+    def _dispatch_sync_smtp(cls, msg: MIMEMultipart, masked: str) -> bool:
+        """
+        Synchronous SMTP transmission executed inside a worker thread via asyncio.to_thread.
+        Guarantees that the main asyncio event loop is never blocked by socket I/O.
+        """
+        cls._last_error = None
+        host = settings.SMTP_HOST
+        port = settings.SMTP_PORT or 587
+        username = settings.SMTP_USERNAME
+        password = settings.SMTP_PASSWORD
+        timeout = float(settings.SMTP_TIMEOUT_SECONDS or 5.0)
+        use_ssl = bool(settings.SMTP_USE_SSL or port == 465)
+
+        if password:
+            password = password.strip()
+            if "gmail" in (host or "").lower():
+                password = password.replace(" ", "")
+
+        def _attempt_send(target_port: int, ssl_mode: bool) -> Tuple[bool, Optional[str]]:
+            t_start = time.perf_counter()
+            ssl_ctx = ssl.create_default_context()
+            proto_str = "SMTPS (SSL)" if ssl_mode else "SMTP+STARTTLS"
+            try:
+                if ssl_mode:
+                    server = smtplib.SMTP_SSL(host, target_port, context=ssl_ctx, timeout=timeout)
+                else:
+                    server = smtplib.SMTP(host, target_port, timeout=timeout)
+
+                with server:
+                    server.ehlo()
+                    if not ssl_mode and settings.SMTP_USE_TLS:
+                        server.starttls(context=ssl_ctx)
+                        server.ehlo()
+                    if username and password:
+                        server.login(username, password)
+                    server.send_message(msg)
+
+                elapsed_ms = (time.perf_counter() - t_start) * 1000
+                logger.info(
+                    f"Live SMTP email successfully dispatched to {masked} "
+                    f"via {host}:{target_port} ({proto_str}) in {elapsed_ms:.1f}ms."
+                )
+                return True, None
+            except smtplib.SMTPAuthenticationError as auth_err:
+                elapsed_ms = (time.perf_counter() - t_start) * 1000
+                logger.error(
+                    f"SMTP authentication rejected by {host}:{target_port} after {elapsed_ms:.1f}ms. "
+                    f"Check SMTP credentials / Google App Password. Code: {auth_err.smtp_code}"
+                )
+                return False, "SMTP authentication rejected. Please verify email credentials."
+            except (socket.timeout, TimeoutError):
+                elapsed_ms = (time.perf_counter() - t_start) * 1000
+                logger.warning(
+                    f"SMTP connection to {host}:{target_port} ({proto_str}) timed out after {elapsed_ms:.1f}ms."
+                )
+                return False, f"SMTP connection to {host}:{target_port} timed out."
+            except (smtplib.SMTPConnectError, ConnectionRefusedError, OSError) as conn_err:
+                elapsed_ms = (time.perf_counter() - t_start) * 1000
+                logger.warning(
+                    f"SMTP connection to {host}:{target_port} ({proto_str}) failed after {elapsed_ms:.1f}ms: {conn_err}"
+                )
+                return False, f"SMTP network connection failed on port {target_port}."
+            except Exception as exc:
+                elapsed_ms = (time.perf_counter() - t_start) * 1000
+                logger.error(
+                    f"Unexpected SMTP error communicating with {host}:{target_port} after {elapsed_ms:.1f}ms: {type(exc).__name__}: {exc}"
+                )
+                return False, f"SMTP delivery error: {type(exc).__name__}"
+
+        # 1. Primary Attempt with configured port & mode
+        success, err = _attempt_send(port, use_ssl)
+        if success:
+            return True
+
+        # 2. Automatic Fallback for Gmail between Port 587 and Port 465
+        # If port 587 failed due to network/timeout (common on cloud egress), try SSL on port 465
+        is_gmail = "gmail" in (host or "").lower()
+        if is_gmail and not success and "authentication rejected" not in (err or "").lower():
+            fallback_port = 465 if port != 465 else 587
+            fallback_ssl = (fallback_port == 465)
+            logger.info(f"Attempting automatic Gmail fallback to port {fallback_port} (SSL={fallback_ssl})...")
+            fb_success, fb_err = _attempt_send(fallback_port, fallback_ssl)
+            if fb_success:
+                return True
+            err = fb_err or err
+
+        cls._last_error = err
+        return False
 
     @classmethod
     async def send_verification_otp(
@@ -52,14 +151,16 @@ class DemoMockEmailAdapter:
         expires_minutes: int = 10,
     ) -> bool:
         """
-        Processes registration OTP dispatch in demo/test mode.
+        Dispatches verification OTP code.
+        - When EMAIL_DISPATCH_ENABLED is False (development/testing): records in in-memory test buffer.
+        - When EMAIL_DISPATCH_ENABLED is True (production): executes non-blocking thread delivery.
         Masks all PII in logs; never logs plaintext OTP codes or passwords.
         """
         masked = mask_email(to_email)
         masked_roll = mask_registration_number(registration_number)
-        logger.info(f"Initiating registration OTP dispatch to {masked} (Roll: {masked_roll}) [Demo Mode: Outbound SMTP Disabled]")
+        logger.info(f"Initiating registration OTP dispatch to {masked} (Roll: {masked_roll})")
 
-        # Record event in demo test buffer
+        # Record in test buffer (for unit testing and verification)
         cls._test_inbox.append({
             "to_email": to_email,
             "registration_number": registration_number,
@@ -72,10 +173,11 @@ class DemoMockEmailAdapter:
             logger.info(f"Email dispatch completed via DemoMockEmailAdapter for {masked} [Simulated].")
             return True
 
-        # Production Live SMTP Dispatch
+        # Live SMTP delivery in worker thread preventing asyncio event loop stalls
+        max_ceiling = float(settings.SMTP_TIMEOUT_SECONDS or 5.0) * 2.0 + 1.0
         try:
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"VFSTR Adaptive Interview Platform - Verification Code"
+            msg["Subject"] = "VFSTR Adaptive Interview Platform - Verification Code"
             msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
             msg["To"] = to_email
 
@@ -111,17 +213,17 @@ class DemoMockEmailAdapter:
             msg.attach(MIMEText(text_content, "plain"))
             msg.attach(MIMEText(html_content, "html"))
 
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
-                if settings.SMTP_USE_TLS:
-                    server.starttls()
-                if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
-                    server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-                server.send_message(msg)
-
-            logger.info(f"Live SMTP email successfully dispatched to {masked}.")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to dispatch live email to {masked}: {str(e)}")
+            return await asyncio.wait_for(
+                asyncio.to_thread(cls._dispatch_sync_smtp, msg, masked),
+                timeout=max_ceiling
+            )
+        except asyncio.TimeoutError:
+            cls._last_error = "Email dispatch timed out on all attempted connection ports."
+            logger.error(f"Email dispatch to {masked} exceeded thread ceiling ({max_ceiling:.1f}s).")
+            return False
+        except Exception as exc:
+            cls._last_error = str(exc)
+            logger.error(f"Failed to initiate email dispatch for {masked}: {exc}")
             return False
 
 # Backward-compatible alias

@@ -34,7 +34,8 @@ import {
   Square,
   Mic,
   MicOff,
-  Radio
+  Radio,
+  Terminal,
 } from 'lucide-react';
 
 export default function InterviewRoom() {
@@ -58,6 +59,22 @@ export default function InterviewRoom() {
   // Final Scorecard State
   const [isCompleted, setIsCompleted] = useState(false);
   const [scorecard, setScorecard] = useState(null);
+
+  // Coding Question Language State
+  const [selectedLanguage, setSelectedLanguage] = useState('Python');
+
+  const CODE_TEMPLATES = {
+    Python: '# Python Solution\ndef solution():\n    # Write your solution code here\n    pass\n',
+    Java: '// Java Solution\npublic class Solution {\n    public static void main(String[] args) {\n        // Write your solution code here\n    }\n}\n',
+    C: '// C Solution\n#include <stdio.h>\n\nint main() {\n    // Write your solution code here\n    return 0;\n}\n',
+  };
+
+  const handleLanguageSelect = (lang) => {
+    setSelectedLanguage(lang);
+    if (!answerText.trim() || Object.values(CODE_TEMPLATES).some(t => t.trim() === answerText.trim())) {
+      setAnswerText(CODE_TEMPLATES[lang] || '');
+    }
+  };
 
   // Timer State
   const [secondsRemaining, setSecondsRemaining] = useState(null);
@@ -500,9 +517,13 @@ export default function InterviewRoom() {
         question_text: sess.active_question.question_text,
         topic: sess.active_question.topic,
         difficulty: sess.active_question.difficulty,
+        question_type: sess.active_question.question_type || 'conceptual',
         evaluator_mode: sess.evaluator_mode,
         interview_title: sess.interview_title,
       });
+      if (sess.active_question.question_type === 'coding') {
+        setAnswerText(CODE_TEMPLATES['Python']);
+      }
     }
 
     setLoading(false);
@@ -605,9 +626,14 @@ export default function InterviewRoom() {
         question_text: pendingNextQuestion.question_text,
         topic: pendingNextQuestion.topic,
         difficulty: pendingNextQuestion.difficulty,
+        question_type: pendingNextQuestion.question_type || 'conceptual',
         evaluator_mode: pendingNextQuestion.evaluator_mode,
       }));
-      setAnswerText('');
+      if (pendingNextQuestion.question_type === 'coding') {
+        setAnswerText(CODE_TEMPLATES[selectedLanguage] || '');
+      } else {
+        setAnswerText('');
+      }
       setLastEvaluation(null);
       setPendingNextQuestion(null);
     }
@@ -803,9 +829,9 @@ export default function InterviewRoom() {
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Demonstrated Technical Strengths</span>
               </h3>
-              {scorecard.strengths && scorecard.strengths.length > 0 ? (
+              {(scorecard.strengths || scorecard.strengths_summary) && (scorecard.strengths || scorecard.strengths_summary).length > 0 ? (
                 <ul className="space-y-2 text-xs text-slate-300">
-                  {scorecard.strengths.map((str, i) => (
+                  {(scorecard.strengths || scorecard.strengths_summary).map((str, i) => (
                     <li key={i} className="flex items-start space-x-2">
                       <span className="text-emerald-400 font-bold">•</span>
                       <span>{str}</span>
@@ -859,7 +885,7 @@ export default function InterviewRoom() {
                         <p className="text-xs text-white font-medium">{item.question_text}</p>
                       </div>
                       <div className="text-right shrink-0">
-                        <span className="text-sm font-bold text-indigo-300 font-mono">{item.score}</span>
+                        <span className="text-sm font-bold text-indigo-300 font-mono">{item.score ?? item.evaluation_score}</span>
                         <span className="text-xs text-slate-500"> / 10</span>
                       </div>
                     </div>
@@ -972,6 +998,17 @@ export default function InterviewRoom() {
             </span>
             <span className="text-slate-600">•</span>
             <span className="text-xs text-slate-300 font-medium">Topic: {activeQuestion?.topic}</span>
+            <span className="text-slate-600">•</span>
+            {activeQuestion?.question_type === 'coding' ? (
+              <span className="text-[11px] font-mono font-bold text-cyan-300 px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 flex items-center space-x-1">
+                <Terminal className="w-3 h-3 text-cyan-400" />
+                <span>Coding Problem</span>
+              </span>
+            ) : (
+              <span className="text-[11px] font-mono text-slate-400 px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                Conceptual
+              </span>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">
@@ -1224,13 +1261,46 @@ export default function InterviewRoom() {
               </div>
             )}
 
+            {/* Coding Language Selector when question is coding type */}
+            {activeQuestion?.question_type === 'coding' && (
+              <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-3 mb-2">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs font-medium text-slate-300 flex items-center space-x-1">
+                    <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Programming Language:</span>
+                  </span>
+                  {['Python', 'Java', 'C'].map((lang) => (
+                    <button
+                      key={lang}
+                      type="button"
+                      onClick={() => handleLanguageSelect(lang)}
+                      className={`px-3 py-1 rounded-lg text-xs font-mono font-semibold transition ${
+                        selectedLanguage === lang
+                          ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/30'
+                          : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                      }`}
+                    >
+                      {lang}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  Environment: <strong className="text-cyan-300">{selectedLanguage}</strong>
+                </span>
+              </div>
+            )}
+
             <textarea
               id="student-answer"
               rows={8}
               value={answerText}
               onChange={(e) => setAnswerText(e.target.value)}
               disabled={submitting || !!lastEvaluation}
-              placeholder="Speak or type your explanation here. You can use voice input above or type manually. Be specific with networking protocols, layer behavior, encapsulation, and operational mechanisms..."
+              placeholder={
+                activeQuestion?.question_type === 'coding'
+                  ? `Write your ${selectedLanguage} implementation and algorithmic explanation here...`
+                  : "Speak or type your explanation here. You can use voice input above or type manually. Be specific with technical architecture, operational mechanisms, and design trade-offs..."
+              }
               className="w-full rounded-xl bg-slate-950/80 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-100 placeholder-slate-600 text-xs font-mono p-4 resize-none transition leading-relaxed disabled:opacity-50"
             />
           </div>

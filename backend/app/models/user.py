@@ -28,6 +28,8 @@ class UserBase(BaseModel):
     department: Optional[str] = None
     batch_cohort: Optional[str] = None
     section: Optional[str] = None
+    contact_number: Optional[str] = None
+    college_name: Optional[str] = None
 
     @field_validator("email", mode="before")
     @classmethod
@@ -65,6 +67,8 @@ class UserResponse(BaseModel):
     department: Optional[str] = None
     batch_cohort: Optional[str] = None
     section: Optional[str] = None
+    contact_number: Optional[str] = None
+    college_name: Optional[str] = None
     account_status: AccountStatus
     is_verified: bool
     created_at: datetime
@@ -72,7 +76,7 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(..., min_length=1, max_length=150)
     password: str = Field(..., min_length=1)
 
     @field_validator("email", mode="before")

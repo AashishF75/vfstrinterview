@@ -16,7 +16,8 @@ import {
   LogOut,
   UserCheck,
   Cpu,
-  X
+  X,
+  Building2
 } from 'lucide-react';
 import { checkBackendHealth } from './api/client';
 import { useAuth } from './context/AuthContext';
@@ -24,6 +25,9 @@ import ProtectedRoute from './components/ProtectedRoute';
 import AnimatedGlobe from './components/AnimatedGlobe';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import GeneralStudentLogin from './pages/GeneralStudentLogin';
+import GeneralStudentRegister from './pages/GeneralStudentRegister';
+import VfstrStudentLogin from './pages/VfstrStudentLogin';
 import Dashboard from './pages/Dashboard';
 import AdminConsole from './pages/AdminConsole';
 import InterviewRoom from './pages/InterviewRoom';
@@ -151,18 +155,24 @@ function HomePage() {
             ) : (
               <div className="flex items-center space-x-2">
                 <Link
-                  to="/register"
-                  className="hidden sm:inline-flex items-center px-3.5 py-1.5 text-xs font-medium rounded-lg text-slate-300 hover:text-white hover:bg-slate-900 border border-slate-800 transition"
+                  to="/students/login"
+                  className="hidden sm:inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-lg text-cyan-300 hover:text-white hover:bg-slate-900 border border-cyan-800/40 transition"
                 >
-                  Student Register
+                  Students
+                </Link>
+                <Link
+                  to="/vfstr/login"
+                  className="hidden sm:inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-lg text-purple-300 hover:text-white hover:bg-slate-900 border border-purple-800/40 transition"
+                >
+                  VFSTR Students
                 </Link>
                 <Link
                   id="header-login-link"
                   to="/login"
-                  className="inline-flex items-center space-x-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-cyan-600 via-indigo-600 to-violet-600 hover:from-cyan-500 hover:to-violet-500 text-white shadow-md shadow-cyan-500/20 transition"
+                  className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-cyan-600 via-indigo-600 to-violet-600 hover:from-cyan-500 hover:to-violet-500 text-white shadow-md shadow-cyan-500/20 transition"
                 >
                   <Lock className="w-3.5 h-3.5 text-cyan-200" />
-                  <span>Portal Login</span>
+                  <span>Institution Portal</span>
                 </Link>
               </div>
             )}
@@ -186,26 +196,128 @@ function HomePage() {
                 Adaptive technical assessment calibrated for university campus placements. Practice interview questions that dynamically adjust to your responses, receive structured feedback, and prepare for institutional evaluations.
               </p>
 
-              <div className="flex flex-wrap items-center gap-4 w-full sm:w-auto">
-                <Link
-                  id="hero-student-btn"
-                  to={isAuthenticated ? "/dashboard" : "/login"}
-                  className="w-full sm:w-auto inline-flex items-center justify-center space-x-2.5 px-8 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 text-white font-semibold text-sm shadow-xl shadow-cyan-600/20 hover:shadow-cyan-600/35 hover:opacity-95 transition active:scale-[0.99]"
-                >
-                  <GraduationCap className="w-4 h-4 text-cyan-200" />
-                  <span>Start Interview Practice</span>
-                  <ArrowRight className="w-4 h-4 ml-1 text-cyan-200" />
-                </Link>
+              {isAuthenticated ? (
+                <div className="flex flex-wrap items-center gap-4 w-full sm:w-auto">
+                  <Link
+                    id="hero-student-btn"
+                    to="/dashboard"
+                    className="w-full sm:w-auto inline-flex items-center justify-center space-x-2.5 px-8 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 text-white font-semibold text-sm shadow-xl shadow-cyan-600/20 hover:shadow-cyan-600/35 hover:opacity-95 transition active:scale-[0.99]"
+                  >
+                    <UserCheck className="w-4 h-4 text-cyan-200" />
+                    <span>Go to Workspace Dashboard</span>
+                    <ArrowRight className="w-4 h-4 ml-1 text-cyan-200" />
+                  </Link>
 
-                <Link
-                  id="hero-admin-btn"
-                  to={isAuthenticated ? (hasRole(['platform_admin', 'university_admin', 'department_admin']) ? '/admin' : '/dashboard') : '/login'}
-                  className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 rounded-xl bg-slate-900/80 text-slate-200 hover:text-white hover:bg-slate-800 font-semibold text-sm border border-slate-800 transition"
-                >
-                  <Users className="w-4 h-4 text-violet-400" />
-                  <span>Institution Portal</span>
-                </Link>
-              </div>
+                  {hasRole(['platform_admin', 'university_admin', 'department_admin']) && (
+                    <Link
+                      id="hero-admin-btn"
+                      to="/admin"
+                      className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 rounded-xl bg-slate-900/80 text-slate-200 hover:text-white hover:bg-slate-800 font-semibold text-sm border border-slate-800 transition"
+                    >
+                      <ShieldCheck className="w-4 h-4 text-violet-400" />
+                      <span>Admin Suite</span>
+                    </Link>
+                  )}
+                </div>
+              ) : (
+                <div className="w-full max-w-xl space-y-4">
+                  {/* Two Prominent, Visually Distinct Student Entry Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    {/* Card 1: Students (Other Colleges & Universities) */}
+                    <div
+                      id="card-general-students"
+                      className="p-4 rounded-2xl bg-gradient-to-br from-cyan-950/40 via-slate-950/70 to-slate-900/50 border border-cyan-500/30 hover:border-cyan-400/60 shadow-lg shadow-cyan-950/20 transition flex flex-col justify-between group relative overflow-hidden"
+                    >
+                      <div className="absolute top-0 right-0 w-28 h-28 bg-cyan-500/5 rounded-full blur-xl pointer-events-none" />
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="w-7 h-7 rounded-lg bg-cyan-950/90 border border-cyan-500/40 text-cyan-400 flex items-center justify-center shrink-0">
+                            <Building2 className="w-3.5 h-3.5" />
+                          </div>
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                            Partner Institutions
+                          </span>
+                        </div>
+                        <h2 className="text-sm font-bold text-white tracking-tight">Students</h2>
+                        <p className="text-[11px] text-slate-400 mt-1 leading-snug">
+                          For students from other colleges and universities.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5 mt-4 pt-3 border-t border-slate-800/80">
+                        <Link
+                          id="btn-students-login"
+                          to="/students/login"
+                          className="w-full inline-flex items-center justify-center space-x-1.5 py-2 px-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs shadow-md shadow-cyan-600/20 transition active:scale-[0.99]"
+                        >
+                          <span>Sign In</span>
+                          <ArrowRight className="w-3 h-3" />
+                        </Link>
+                        <Link
+                          id="btn-students-register"
+                          to="/students/register"
+                          className="w-full inline-flex items-center justify-center py-1.5 px-3 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-cyan-300 hover:text-white border border-cyan-500/30 font-medium text-[11px] transition"
+                        >
+                          <span>Register</span>
+                        </Link>
+                      </div>
+                    </div>
+
+                    {/* Card 2: VFSTR Students */}
+                    <div
+                      id="card-vfstr-students"
+                      className="p-4 rounded-2xl bg-gradient-to-br from-purple-950/40 via-slate-950/70 to-slate-900/50 border border-purple-500/30 hover:border-purple-400/60 shadow-lg shadow-purple-950/20 transition flex flex-col justify-between group relative overflow-hidden"
+                    >
+                      <div className="absolute top-0 right-0 w-28 h-28 bg-purple-500/5 rounded-full blur-xl pointer-events-none" />
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="w-7 h-7 rounded-lg bg-purple-950/90 border border-purple-500/40 text-purple-300 flex items-center justify-center shrink-0">
+                            <GraduationCap className="w-3.5 h-3.5" />
+                          </div>
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                            VFSTR University
+                          </span>
+                        </div>
+                        <h2 className="text-sm font-bold text-white tracking-tight">VFSTR Students</h2>
+                        <p className="text-[11px] text-slate-400 mt-1 leading-snug">
+                          For students of Vignan's Foundation for Science, Technology & Research.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5 mt-4 pt-3 border-t border-slate-800/80">
+                        <Link
+                          id="btn-vfstr-login"
+                          to="/vfstr/login"
+                          className="w-full inline-flex items-center justify-center space-x-1.5 py-2 px-3 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-600 hover:from-purple-600 hover:to-indigo-500 text-white font-semibold text-xs shadow-md shadow-purple-600/30 transition active:scale-[0.99]"
+                        >
+                          <span>VFSTR Login</span>
+                          <ArrowRight className="w-3 h-3" />
+                        </Link>
+                        <Link
+                          id="btn-vfstr-register"
+                          to="/vfstr/register"
+                          className="w-full inline-flex items-center justify-center py-1.5 px-3 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-purple-300 hover:text-white border border-purple-500/30 font-medium text-[11px] transition"
+                        >
+                          <span>Claim Eligibility</span>
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Institution Portal Link for Faculty & Administration */}
+                  <div className="pt-1">
+                    <Link
+                      id="hero-admin-btn"
+                      to="/login"
+                      className="w-full inline-flex items-center justify-center space-x-2 px-4 py-2.5 rounded-xl bg-slate-950/80 text-slate-300 hover:text-white hover:bg-slate-900 font-medium text-xs border border-slate-800 hover:border-slate-700 transition"
+                    >
+                      <Users className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Institution Portal (Faculty & Administration)</span>
+                      <ArrowRight className="w-3 h-3 text-slate-500 ml-1" />
+                    </Link>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Right Column: Large, Bright 3D Animated Particle Globe */}
@@ -394,6 +506,10 @@ export default function App() {
       <Route path="/" element={<HomePage />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/students/login" element={<GeneralStudentLogin />} />
+      <Route path="/students/register" element={<GeneralStudentRegister />} />
+      <Route path="/vfstr/login" element={<VfstrStudentLogin />} />
+      <Route path="/vfstr/register" element={<Register />} />
       <Route
         path="/dashboard"
         element={

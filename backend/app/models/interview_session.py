@@ -109,6 +109,7 @@ class SessionQuestionResponse(BaseModel):
     difficulty: QuestionDifficulty
     question_text: str
     topic: str
+    question_type: Optional[str] = "conceptual"
     time_remaining_seconds: int
     evaluator_mode: str
 
@@ -148,6 +149,7 @@ class ResponseSummary(BaseModel):
     difficulty: QuestionDifficulty
     answer_text: str
     evaluation_score: float
+    score: Optional[float] = None
     feedback: str
     strengths: List[str]
     improvements: List[str]
@@ -166,6 +168,7 @@ class ScorecardResponse(BaseModel):
     summary_feedback: str
     difficulty_progression: List[str]
     strengths_summary: List[str]
+    strengths: Optional[List[str]] = None
     areas_for_growth: List[str]
     evaluator_mode: str
     disclaimer: str

@@ -45,6 +45,7 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
+        "https://vfstrinterview.vercel.app",
     ]
 
     @field_validator("CORS_ORIGINS", mode="before")
@@ -58,6 +59,44 @@ class Settings(BaseSettings):
                     pass
             return [i.strip() for i in v.split(",") if i.strip()]
         return v
+
+    # Partner Institution Access Policy Configuration
+    ALLOWED_EXTERNAL_INSTITUTIONS: List[str] = [
+        "Vignan's Institute of Information Technology (VIIT, Visakhapatnam)",
+        "Vignan's Lara Institute of Technology & Science (VLITS, Vadlamudi)",
+        "Vignan's Institute of Technology and Aeronautical Engineering (VITAE, Hyderabad)",
+        "Vignan Institute of Technology and Science (VITS, Deshmukhi)",
+        "Vignan's Nirula Institute of Technology & Science for Women (VNITSW, Guntur)",
+    ]
+
+    @field_validator("ALLOWED_EXTERNAL_INSTITUTIONS", mode="before")
+    @classmethod
+    def assemble_allowed_institutions(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    return json.loads(v)
+                except Exception:
+                    pass
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return v
+
+    def is_institution_access_permitted(self, college_name: str) -> bool:
+        """
+        Validates whether a college is permitted under the platform's partner access policy.
+        Matches case-insensitively and against institution abbreviations.
+        Fails closed: returns False for unknown institutions.
+        """
+        if not college_name or not college_name.strip():
+            return False
+        cleaned = college_name.strip().lower()
+        for allowed in self.ALLOWED_EXTERNAL_INSTITUTIONS:
+            if cleaned == allowed.lower():
+                return True
+            allowed_main = allowed.split("(")[0].strip().lower()
+            if cleaned == allowed_main:
+                return True
+        return False
 
     # MongoDB Atlas configuration
     MONGODB_URI: str = "mongodb://localhost:27017"
@@ -97,6 +136,8 @@ class Settings(BaseSettings):
     SMTP_USERNAME: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
     SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
+    SMTP_TIMEOUT_SECONDS: float = 5.0
     SMTP_FROM_EMAIL: str = "noreply@vfstr.ac.in"
     SMTP_FROM_NAME: str = "VFSTR Adaptive Interview Platform"
     EMAIL_DISPATCH_ENABLED: bool = False
@@ -190,7 +231,100 @@ class Settings(BaseSettings):
             "ai_provider": self.AI_PROVIDER or "mock (fallback default)",
             "gemini_model": self.resolved_gemini_model,
             "has_gemini_key": bool(self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip()),
+            "email_dispatch_enabled": self.EMAIL_DISPATCH_ENABLED,
+            "has_smtp_host": bool(self.SMTP_HOST),
+            "smtp_port": self.SMTP_PORT,
+            "smtp_use_ssl": self.SMTP_USE_SSL,
+            "smtp_use_tls": self.SMTP_USE_TLS,
+            "has_smtp_credentials": bool(self.SMTP_USERNAME and self.SMTP_PASSWORD),
         }
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_smtp_environment_aliases(cls, data: Any) -> Any:
+        """
+        Resolves SMTP configuration across multiple common cloud environment variable naming conventions
+        (e.g. Render, Gmail, Flask-Mail, Django standard aliases).
+        Sanitizes whitespace from Google App Passwords and configures SSL/TLS according to port.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        env = dict(os.environ)
+
+        def get_val(*keys):
+            for k in keys:
+                if k in data and data[k] is not None:
+                    return data[k]
+                for ek, ev in env.items():
+                    if ek.lower() == k.lower() and str(ev).strip():
+                        return str(ev).strip()
+            return None
+
+        # 1. Resolve host
+        host = get_val("SMTP_HOST", "SMTP_SERVER", "MAIL_SERVER", "EMAIL_HOST")
+        if host:
+            data["SMTP_HOST"] = host
+
+        # 2. Resolve port
+        port_raw = get_val("SMTP_PORT", "MAIL_PORT", "EMAIL_PORT")
+        if port_raw:
+            try:
+                data["SMTP_PORT"] = int(port_raw)
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Resolve username
+        user = get_val("SMTP_USERNAME", "SMTP_USER", "MAIL_USERNAME", "EMAIL_HOST_USER", "GMAIL_USER")
+        if user:
+            data["SMTP_USERNAME"] = user
+
+        # 4. Resolve password
+        pwd = get_val("SMTP_PASSWORD", "SMTP_PASS", "MAIL_PASSWORD", "EMAIL_HOST_PASSWORD", "GMAIL_APP_PASSWORD", "GMAIL_PASSWORD")
+        if pwd:
+            pwd_clean = str(pwd).strip()
+            host_check = (data.get("SMTP_HOST") or "").lower()
+            if "gmail" in host_check and " " in pwd_clean:
+                pwd_clean = pwd_clean.replace(" ", "")
+            data["SMTP_PASSWORD"] = pwd_clean
+
+        # 5. Resolve dispatch enabled
+        dispatch = get_val("EMAIL_DISPATCH_ENABLED", "ENABLE_EMAIL_DISPATCH")
+        if dispatch is not None:
+            if isinstance(dispatch, str):
+                data["EMAIL_DISPATCH_ENABLED"] = dispatch.lower() in ("true", "1", "yes", "on")
+            else:
+                data["EMAIL_DISPATCH_ENABLED"] = bool(dispatch)
+        elif data.get("SMTP_HOST") and data.get("SMTP_PASSWORD"):
+            data["EMAIL_DISPATCH_ENABLED"] = True
+
+        # 6. Resolve SSL vs TLS
+        resolved_port = data.get("SMTP_PORT", 587)
+        ssl_val = get_val("SMTP_USE_SSL", "SMTP_SSL", "MAIL_USE_SSL")
+        if ssl_val is not None:
+            if isinstance(ssl_val, str):
+                data["SMTP_USE_SSL"] = ssl_val.lower() in ("true", "1", "yes", "on")
+            else:
+                data["SMTP_USE_SSL"] = bool(ssl_val)
+        elif resolved_port == 465:
+            data["SMTP_USE_SSL"] = True
+            data["SMTP_USE_TLS"] = False
+
+        tls_val = get_val("SMTP_USE_TLS", "MAIL_USE_TLS", "EMAIL_USE_TLS")
+        if tls_val is not None:
+            if isinstance(tls_val, str):
+                data["SMTP_USE_TLS"] = tls_val.lower() in ("true", "1", "yes", "on")
+            else:
+                data["SMTP_USE_TLS"] = bool(tls_val)
+        elif resolved_port == 465:
+            data["SMTP_USE_TLS"] = False
+
+        # 7. Resolve from email
+        from_email = get_val("SMTP_FROM_EMAIL", "MAIL_FROM", "DEFAULT_FROM_EMAIL")
+        if from_email:
+            data["SMTP_FROM_EMAIL"] = from_email
+
+        return data
 
     @model_validator(mode="after")
     def resolve_mock_evaluator_fallback_default(self) -> "Settings":

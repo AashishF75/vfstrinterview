@@ -123,6 +123,7 @@ class StudentInterviewAssignmentInDB(BaseModel):
     student_user_id: Optional[str] = None
     eligibility_registry_id: Optional[str] = None
     section: Optional[str] = None
+    selected_role: Optional[str] = None
     status: AssignmentStatus = AssignmentStatus.ASSIGNED
     assigned_by_user_id: str
     assigned_at: datetime = Field(default_factory=utc_now)
@@ -146,6 +147,7 @@ class StudentAssignmentResponse(BaseModel):
     duration_minutes: int
     student_registration_number: str
     student_email: str
+    selected_role: Optional[str] = None
     section: Optional[str] = None
     status: AssignmentStatus
     assigned_at: datetime

@@ -3,7 +3,7 @@ import axios from 'axios';
 // Create configured Axios instance
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '',
-  timeout: 10000,
+  timeout: 25000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -21,7 +21,7 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor to handle authorization errors
+// Response interceptor to handle authorization errors and format clear timeout messages
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -29,6 +29,9 @@ apiClient.interceptors.response.use(
       // Token expired or invalid
       sessionStorage.removeItem('vfstr_access_token');
       sessionStorage.removeItem('vfstr_user_cache');
+    }
+    if (error.code === 'ECONNABORTED' || (error.message && error.message.toLowerCase().includes('timeout'))) {
+      error.friendlyMessage = 'The server took longer than expected to respond. Please check your network connection and try again.';
     }
     return Promise.reject(error);
   }
@@ -132,6 +135,25 @@ export const getAdminOnlyTest = async () => {
   }
 };
 
+export const registerVfstrStudent = async ({ registrationNumber, contactNumber }) => {
+  try {
+    const response = await apiClient.post('/api/auth/vfstr/register', {
+      registration_number: registrationNumber,
+      contact_number: contactNumber,
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'VFSTR student verification failed',
+      status: error.response?.status,
+    };
+  }
+};
+
 export const initiateRegistration = async (registrationNumber) => {
   try {
     const response = await apiClient.post('/api/auth/register/initiate', {
@@ -144,7 +166,7 @@ export const initiateRegistration = async (registrationNumber) => {
   } catch (error) {
     return {
       success: false,
-      error: error.response?.data?.detail || error.message || 'Registration initiation failed',
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'Registration initiation failed',
       status: error.response?.status,
     };
   }
@@ -162,7 +184,7 @@ export const resendRegistrationCode = async (registrationNumber) => {
   } catch (error) {
     return {
       success: false,
-      error: error.response?.data?.detail || error.message || 'Resend code failed',
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'Resend code failed',
       status: error.response?.status,
     };
   }
@@ -182,7 +204,94 @@ export const completeRegistration = async (registrationNumber, verificationCode,
   } catch (error) {
     return {
       success: false,
-      error: error.response?.data?.detail || error.message || 'Registration failed',
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'Registration failed',
+      status: error.response?.status,
+    };
+  }
+};
+
+// ==========================================
+// General Student Registration APIs (Partner Colleges)
+// ==========================================
+
+export const getAllowedInstitutions = async () => {
+  try {
+    const response = await apiClient.get('/api/auth/institutions/allowed');
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch partner institutions',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const initiateGeneralRegistration = async ({
+  fullName,
+  collegeName,
+  collegeRegNo,
+  email,
+  contactNumber,
+  password,
+}) => {
+  try {
+    const response = await apiClient.post('/api/auth/general/register/initiate', {
+      full_name: fullName,
+      college_name: collegeName,
+      college_reg_no: collegeRegNo,
+      email: email,
+      contact_number: contactNumber,
+      password: password,
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'General registration initiation failed',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const resendGeneralRegistrationCode = async (email) => {
+  try {
+    const response = await apiClient.post('/api/auth/general/register/resend', {
+      email,
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'Resend verification code failed',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const completeGeneralRegistration = async (email, verificationCode) => {
+  try {
+    const response = await apiClient.post('/api/auth/general/register/complete', {
+      email,
+      verification_code: verificationCode,
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.friendlyMessage || error.message || 'General registration completion failed',
       status: error.response?.status,
     };
   }
@@ -342,6 +451,32 @@ export const completeStudentInterview = async (assignmentId) => {
     return {
       success: false,
       error: error.response?.data?.detail || error.message || 'Failed to complete interview',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const getAvailableJobRoles = async () => {
+  try {
+    const response = await apiClient.get('/api/student/interviews/roles');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch job roles',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const selectStudentJobRole = async (role) => {
+  try {
+    const response = await apiClient.post('/api/student/interviews/select-role', { role });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to initialize role interview',
       status: error.response?.status,
     };
   }

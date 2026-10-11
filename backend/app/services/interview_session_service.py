@@ -37,6 +37,7 @@ RESPONSES_COLLECTION = "interview_responses"
 SCORECARDS_COLLECTION = "interview_scorecards"
 ASSIGNMENTS_COLLECTION = "student_interview_assignments"
 INTERVIEWS_COLLECTION = "university_interviews"
+QUESTIONS_COLLECTION = "interview_questions"
 
 
 def _ensure_utc(dt: Any) -> datetime:
@@ -51,6 +52,24 @@ def _ensure_utc(dt: Any) -> datetime:
 
 
 class InterviewSessionService:
+    @staticmethod
+    def _resolve_interview_role(assignment: Optional[Dict[str, Any]], interview: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Resolves target role for strict role-based question bank isolation."""
+        role = (assignment or {}).get("selected_role") or (interview or {}).get("role") or (interview or {}).get("target_role")
+        if role:
+            return role
+        title = (interview or {}).get("title", "")
+        for canon in [
+            "Associate Software Engineer",
+            "Software Development Engineer",
+            "Product Engineer",
+            "System Engineer",
+            "Testing Engineer",
+        ]:
+            if canon.lower() in title.lower():
+                return canon
+        return None
+
     @staticmethod
     async def start_session(
         db: AsyncIOMotorDatabase,
@@ -124,29 +143,75 @@ class InterviewSessionService:
         session_id = str(uuid.uuid4())
         total_questions = settings.INTERVIEW_TOTAL_QUESTIONS_DEFAULT
 
-        # 5. Resolve AI Provider and generate initial question
+        # 5. Resolve Question: Check stored question bank first, fallback to AI provider
         provider = get_ai_provider()
         initial_diff = QuestionDifficulty.MEDIUM
 
+        target_role = InterviewSessionService._resolve_interview_role(assignment, interview)
+
+        interview_or = [{"interview_id": assignment["interview_id"]}, {"interview_id": None}]
+        diff_or = [{"difficulty": initial_diff.value}, {"difficulty": None}, {"difficulty": {"$exists": False}}]
+
+        stored_q = None
         try:
-            gen_q = await provider.generate_question(
-                topic=interview.get("title", "Networking Assessment"),
-                instructions=interview.get("instructions", ""),
-                difficulty=initial_diff,
-                question_index=1,
-                previous_questions=[],
-            )
-        except (AIProviderUnavailableError, AIProviderError) as exc:
-            logger.error("AI provider failure during session start: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Interview AI evaluator is unavailable: {str(exc)}",
-            )
+            # 1. Prefer target role, conceptual, matching difficulty
+            q1_filter: Dict[str, Any] = {
+                "$and": [
+                    {"$or": interview_or},
+                    {"$or": diff_or},
+                ],
+                "question_type": "conceptual",
+            }
+            if target_role:
+                q1_filter["role"] = target_role
+            stored_q = await db[QUESTIONS_COLLECTION].find_one(q1_filter)
+
+            # 2. Prefer target role, conceptual (any difficulty in bank)
+            if not stored_q:
+                q2_filter = {
+                    "$or": interview_or,
+                    "question_type": "conceptual",
+                }
+                if target_role:
+                    q2_filter["role"] = target_role
+                stored_q = await db[QUESTIONS_COLLECTION].find_one(q2_filter)
+
+            # 3. Target role (any question type / any difficulty)
+            if not stored_q:
+                q3_filter = {"$or": interview_or}
+                if target_role:
+                    q3_filter["role"] = target_role
+                stored_q = await db[QUESTIONS_COLLECTION].find_one(q3_filter)
+        except Exception as e:
+            logger.warning("Error checking stored questions: %s", e)
+
+        if stored_q and stored_q.get("question_text"):
+            gen_q = {
+                "question_text": stored_q["question_text"],
+                "topic": stored_q.get("topic", interview.get("title", "Technical Assessment")),
+                "question_type": stored_q.get("question_type", "conceptual"),
+            }
+        else:
+            try:
+                gen_q = await provider.generate_question(
+                    topic=interview.get("title", "Networking Assessment"),
+                    instructions=interview.get("instructions", ""),
+                    difficulty=initial_diff,
+                    question_index=1,
+                    previous_questions=[],
+                )
+            except (AIProviderUnavailableError, AIProviderError) as exc:
+                logger.error("AI provider failure during session start: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Interview AI evaluator is unavailable: {str(exc)}",
+                )
 
         session_doc = {
             "session_id": session_id,
             "interview_id": assignment["interview_id"],
             "assignment_id": assignment_id,
+            "selected_role": target_role,
             "student_registration_number": clean_reg,
             "student_user_id": str(student_user.id),
             "session_status": SessionStatus.IN_PROGRESS.value,
@@ -164,6 +229,7 @@ class InterviewSessionService:
                 "question_text": gen_q["question_text"],
                 "topic": gen_q["topic"],
                 "difficulty": initial_diff.value,
+                "question_type": gen_q.get("question_type", "conceptual"),
             },
         }
 
@@ -198,6 +264,7 @@ class InterviewSessionService:
             difficulty=initial_diff,
             question_text=gen_q["question_text"],
             topic=gen_q["topic"],
+            question_type=gen_q.get("question_type", "conceptual"),
             time_remaining_seconds=time_remaining,
             evaluator_mode=provider.get_mode().value,
         )
@@ -257,6 +324,7 @@ class InterviewSessionService:
             difficulty=QuestionDifficulty(session.get("current_difficulty", "medium")),
             question_text=active_q.get("question_text", "Explain key networking concepts."),
             topic=active_q.get("topic", "Networking"),
+            question_type=active_q.get("question_type", "conceptual"),
             time_remaining_seconds=time_remaining,
             evaluator_mode=provider.get_mode().value,
         )
@@ -523,20 +591,73 @@ class InterviewSessionService:
             prev_docs = []
         prev_questions = [p.get("question_text", "") for p in prev_docs if isinstance(p, dict)]
 
+        all_asked = prev_questions + [question_text]
+
+        # Check stored question bank first for the next question with strict role isolation
+        target_role = session.get("selected_role") or InterviewSessionService._resolve_interview_role({}, interview)
+        interview_or = [{"interview_id": int_id}, {"interview_id": None}]
+        target_type = "coding" if next_q_index >= total_target else "conceptual"
+        diff_or = [{"difficulty": next_diff.value}, {"difficulty": None}, {"difficulty": {"$exists": False}}]
+
+        stored_next_q = None
         try:
-            next_q_gen = await provider.generate_question(
-                topic=interview_title,
-                instructions=interview.get("instructions", "") if interview else "",
-                difficulty=next_diff,
-                question_index=next_q_index,
-                previous_questions=prev_questions + [question_text],
-            )
-        except (AIProviderUnavailableError, AIProviderError) as exc:
-            logger.error("AI provider failure generating next question: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Question generation service is temporarily unavailable: {str(exc)}",
-            )
+            # 1. Matching role, target_type, unasked, matching difficulty
+            query_tier1 = {
+                "$and": [
+                    {"$or": interview_or},
+                    {"$or": diff_or},
+                ],
+                "question_text": {"$nin": all_asked},
+                "question_type": target_type,
+            }
+            if target_role:
+                query_tier1["role"] = target_role
+            stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier1)
+
+            # 2. Matching role, target_type, unasked (any difficulty in bank)
+            if not stored_next_q:
+                query_tier2 = {
+                    "$or": interview_or,
+                    "question_text": {"$nin": all_asked},
+                    "question_type": target_type,
+                }
+                if target_role:
+                    query_tier2["role"] = target_role
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier2)
+
+            # 3. Matching role, unasked (any type, any difficulty)
+            if not stored_next_q:
+                query_tier3 = {
+                    "$or": interview_or,
+                    "question_text": {"$nin": all_asked},
+                }
+                if target_role:
+                    query_tier3["role"] = target_role
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier3)
+        except Exception as e:
+            logger.warning("Error querying stored question bank for progression: %s", e)
+
+        if stored_next_q and stored_next_q.get("question_text"):
+            next_q_gen = {
+                "question_text": stored_next_q["question_text"],
+                "topic": stored_next_q.get("topic", interview_title),
+                "question_type": stored_next_q.get("question_type", target_type),
+            }
+        else:
+            try:
+                next_q_gen = await provider.generate_question(
+                    topic=interview_title,
+                    instructions=interview.get("instructions", "") if interview else "",
+                    difficulty=next_diff,
+                    question_index=next_q_index,
+                    previous_questions=all_asked,
+                )
+            except (AIProviderUnavailableError, AIProviderError) as exc:
+                logger.error("AI provider failure generating next question: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Question generation service is temporarily unavailable: {str(exc)}",
+                )
 
         # Persist response and advance session state
         try:
@@ -557,6 +678,7 @@ class InterviewSessionService:
                         "question_text": next_q_gen["question_text"],
                         "topic": next_q_gen["topic"],
                         "difficulty": next_diff.value,
+                        "question_type": next_q_gen.get("question_type", target_type),
                     },
                     "updated_at": now,
                 }
@@ -574,6 +696,7 @@ class InterviewSessionService:
             difficulty=next_diff,
             question_text=next_q_gen["question_text"],
             topic=next_q_gen["topic"],
+            question_type=next_q_gen.get("question_type", target_type),
             time_remaining_seconds=time_remaining,
             evaluator_mode=provider.get_mode().value,
         )
@@ -652,6 +775,7 @@ class InterviewSessionService:
                 difficulty=QuestionDifficulty(r["difficulty"]),
                 answer_text=r["answer_text"],
                 evaluation_score=r["evaluation_score"],
+                score=r["evaluation_score"],
                 feedback=r["evaluation_feedback"],
                 strengths=r.get("strengths", []),
                 improvements=r.get("improvements", []),
@@ -672,6 +796,7 @@ class InterviewSessionService:
             summary_feedback=scorecard["summary_feedback"],
             difficulty_progression=scorecard.get("difficulty_progression", []),
             strengths_summary=scorecard.get("strengths_summary", []),
+            strengths=scorecard.get("strengths_summary", []),
             areas_for_growth=scorecard.get("areas_for_growth", []),
             evaluator_mode=scorecard.get("evaluator_mode", "mock_rule_engine"),
             disclaimer=scorecard.get("disclaimer", ""),

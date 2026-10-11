@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pymongo import ReturnDocument
@@ -105,6 +105,39 @@ class InMemoryCollection:
             if match:
                 count += 1
         return count
+
+    async def delete_one(self, filter_q):
+        matched_id = None
+        for doc_id, doc in self.docs.items():
+            match = True
+            for k, v in filter_q.items():
+                if doc.get(k) != v:
+                    match = False
+                    break
+            if match:
+                matched_id = doc_id
+                break
+        if matched_id:
+            del self.docs[matched_id]
+        res = MagicMock()
+        res.deleted_count = 1 if matched_id else 0
+        return res
+
+    async def delete_many(self, filter_q):
+        matched_ids = []
+        for doc_id, doc in list(self.docs.items()):
+            match = True
+            for k, v in filter_q.items():
+                if doc.get(k) != v:
+                    match = False
+                    break
+            if match:
+                matched_ids.append(doc_id)
+        for d_id in matched_ids:
+            del self.docs[d_id]
+        res = MagicMock()
+        res.deleted_count = len(matched_ids)
+        return res
 
 
 class InMemoryMockDB:
@@ -412,3 +445,256 @@ async def test_generated_record_cannot_be_claimed_directly(async_client, mock_db
         }
     )
     assert resp.status_code in (400, 409)
+
+
+@pytest.mark.anyio
+async def test_registration_initiate_email_failure_returns_503(async_client, mock_db):
+    """
+    Verifies that when email dispatch fails (e.g. SMTP connection timeout/error),
+    the API returns HTTP 503 Service Unavailable instead of hanging or returning a misleading 200.
+    Also ensures no dirty unconsumed verification record is committed.
+    """
+    with patch("app.services.email_service.EmailService.send_verification_otp", return_value=False):
+        resp = await async_client.post(
+            "/api/auth/register/initiate",
+            json={"registration_number": "241FA04001"}
+        )
+        assert resp.status_code == 503
+        data = resp.json()
+        assert "Unable to deliver verification code" in data["detail"]
+
+        # Ensure no active verification was saved so the student is not penalized with cooldown
+        active_verif = await mock_db["registration_verifications"].find_one({
+            "registration_number_normalized": "241FA04001",
+            "is_consumed": False
+        })
+        assert active_verif is None
+
+
+@pytest.mark.anyio
+async def test_registration_resend_email_failure_returns_503(async_client, mock_db):
+    """
+    Verifies that when resend email dispatch fails, the API returns HTTP 503
+    and preserves the previous verification state without resetting cooldown.
+    """
+    # Seed an active verification
+    initial_resend_at = datetime.now(timezone.utc) - timedelta(seconds=70)
+    mock_db["registration_verifications"].docs["verif-resend"] = {
+        "_id": "verif-resend",
+        "registration_number_normalized": "241FA04001",
+        "roster_email_normalized": "vu.241fa04001@gmail.com",
+        "code_hash": "original_hash",
+        "salt": "original_salt",
+        "attempt_count": 0,
+        "is_consumed": False,
+        "created_at": initial_resend_at,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+        "last_resend_at": initial_resend_at,
+    }
+
+    with patch("app.services.email_service.EmailService.send_verification_otp", return_value=False):
+        resp = await async_client.post(
+            "/api/auth/register/resend",
+            json={"registration_number": "241FA04001"}
+        )
+        assert resp.status_code == 503
+        data = resp.json()
+        assert "Unable to deliver verification code" in data["detail"]
+
+        # Ensure original code_hash was not overwritten on failure
+        saved = mock_db["registration_verifications"].docs["verif-resend"]
+        assert saved["code_hash"] == "original_hash"
+
+
+def test_smtp_alias_resolution_and_password_sanitization():
+    """
+    Verifies that the config model validator resolves SMTP aliases, strips whitespace
+    from Gmail app passwords, and auto-enables SSL for port 465.
+    """
+    from app.core.config import Settings
+
+    raw_env = {
+        "SMTP_SERVER": "smtp.gmail.com",
+        "SMTP_PORT": "465",
+        "SMTP_USER": "testuser@gmail.com",
+        "GMAIL_APP_PASSWORD": " abcd efgh ijkl mnop ",
+        "JWT_SECRET_KEY": "test-secret-at-least-32-characters-long-12345"
+    }
+    s = Settings(**raw_env)
+    assert s.SMTP_HOST == "smtp.gmail.com"
+    assert s.SMTP_PORT == 465
+    assert s.SMTP_USERNAME == "testuser@gmail.com"
+    assert s.SMTP_PASSWORD == "abcdefghijklmnop"
+    assert s.SMTP_USE_SSL is True
+    assert s.SMTP_TIMEOUT_SECONDS <= 5.0
+
+
+@pytest.mark.anyio
+async def test_vfstr_direct_register_eligible_new_student(async_client, mock_db):
+    """
+    Priority 1 & 2: Direct VFSTR registration without OTP.
+    Validates against official eligibility_registry, registers student, returns JWT token,
+    and flags eligibility registry record as claimed.
+    """
+    payload = {
+        "registration_number": "241fa04001",
+        "contact_number": "9876543210"
+    }
+    resp = await async_client.post("/api/auth/vfstr/register", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+    assert data["user"]["role"] == "student"
+    assert data["user"]["registration_number"] == "241FA04001"
+    assert data["user"]["contact_number"] == "9876543210"
+    assert data["user"]["institution_id"] == "VFSTR"
+
+    # Verify eligibility record was updated to claimed
+    elig_rec = await mock_db["eligibility_registry"].find_one({"registration_number": "241FA04001"})
+    assert elig_rec["is_claimed"] is True
+
+
+@pytest.mark.anyio
+async def test_vfstr_direct_register_duplicate_reentry_prevents_duplicate_account(async_client, mock_db):
+    """
+    Priority 1 & 2: Student re-enters their registration number and matching contact number.
+    Returns existing session without creating a duplicate user account.
+    """
+    payload = {
+        "registration_number": "241FA04001",
+        "contact_number": "9876543210"
+    }
+    # First entry
+    resp1 = await async_client.post("/api/auth/vfstr/register", json=payload)
+    assert resp1.status_code == 200
+    user_count_before = await mock_db["users"].count_documents({})
+
+    # Second entry (re-entry)
+    resp2 = await async_client.post("/api/auth/vfstr/register", json=payload)
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert "access_token" in data2
+    assert data2["user"]["registration_number"] == "241FA04001"
+
+    # Ensure no duplicate user was created
+    user_count_after = await mock_db["users"].count_documents({})
+    assert user_count_after == user_count_before
+
+
+@pytest.mark.anyio
+async def test_vfstr_direct_register_contact_number_mismatch_rejected(async_client):
+    """
+    Priority 2: Re-entry with mismatched contact number must be rejected to prevent unauthorized takeover.
+    """
+    # First entry with 9876543210
+    await async_client.post("/api/auth/vfstr/register", json={
+        "registration_number": "241FA04001",
+        "contact_number": "9876543210"
+    })
+
+    # Second attempt with conflicting contact number
+    resp_conflict = await async_client.post("/api/auth/vfstr/register", json={
+        "registration_number": "241FA04001",
+        "contact_number": "9123456789"
+    })
+    assert resp_conflict.status_code == 403
+    assert "does not match the registered contact number" in resp_conflict.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_vfstr_direct_register_invalid_registration_number(async_client):
+    """
+    Priority 1: Invalid registration number returns 404 with clear message.
+    """
+    resp = await async_client.post("/api/auth/vfstr/register", json={
+        "registration_number": "999XX00000",
+        "contact_number": "9876543210"
+    })
+    assert resp.status_code == 404
+    assert "not found in the official VFSTR student eligibility registry" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_vfstr_direct_register_pending_verification_blocked(async_client):
+    """
+    Priority 1 & 2: Students with unverified email source remain restricted.
+    """
+    resp = await async_client.post("/api/auth/vfstr/register", json={
+        "registration_number": "241FA04037",
+        "contact_number": "9876543210"
+    })
+    assert resp.status_code == 403
+    assert "requires official university email verification" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_vfstr_direct_register_invalid_contact_format(async_client):
+    """
+    Priority 1: Contact numbers with fewer than 10 digits are rejected with 422 Unprocessable Entity.
+    """
+    resp = await async_client.post("/api/auth/vfstr/register", json={
+        "registration_number": "241FA04001",
+        "contact_number": "12345"
+    })
+    assert resp.status_code == 422
+
+
+
+def test_question_parser_pdf_text_extraction():
+    """
+    Priority 3: Test parsing of question text into structured questions with difficulty and topic.
+    """
+    from app.services.question_file_parser import parse_pdf_text_to_questions
+
+    sample_text = """
+    Q1. Explain the three-way handshake in TCP/IP protocol. [Medium]
+    Topic: Networking
+
+    Q2. What is the fundamental difference between a Hub, Switch, and Router? [Easy]
+    Topic: Network Devices
+
+    3. Describe the mechanism of BGP path vector routing and loop prevention. [Hard]
+    Topic: Routing Protocols
+    """
+
+    questions = parse_pdf_text_to_questions(sample_text)
+    assert len(questions) == 3
+    assert questions[0]["difficulty"] == "medium"
+    assert questions[0]["topic"] == "Networking"
+    assert "handshake" in questions[0]["question_text"].lower()
+
+    assert questions[1]["difficulty"] == "easy"
+    assert questions[1]["topic"] == "Network Devices"
+
+    assert questions[2]["difficulty"] == "hard"
+    assert questions[2]["topic"] == "Routing Protocols"
+
+
+def test_question_parser_zip_archive():
+    """
+    Priority 3: Test parsing questions from a ZIP archive containing JSON and TXT.
+    """
+    import io
+    import zipfile
+    import json
+    from app.services.question_file_parser import extract_questions_from_zip
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        json_content = json.dumps([
+            {"question": "How does DNS resolution work across recursive and authoritative servers?", "difficulty": "medium", "topic": "DNS"},
+            {"question": "Explain subnet masking and calculate the usable IPs for /26 CIDR block.", "difficulty": "easy", "topic": "IP Addressing"}
+        ])
+        zf.writestr("questions.json", json_content)
+
+        txt_content = "Q1. What is ARP poisoning and how can it be mitigated using Dynamic ARP Inspection? [Hard]\nTopic: Security"
+        zf.writestr("more_questions.txt", txt_content)
+
+    zip_bytes = zip_buffer.getvalue()
+    parsed = extract_questions_from_zip(zip_bytes)
+    assert len(parsed) == 3
+    topics = [q["topic"] for q in parsed]
+    assert "DNS" in topics
+    assert "IP Addressing" in topics
+    assert "Security" in topics

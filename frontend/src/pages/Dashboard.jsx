@@ -7,7 +7,9 @@ import {
   getStudentAssignments,
   acceptStudentAssignment,
   startStudentInterview,
-  completeStudentInterview
+  completeStudentInterview,
+  getAvailableJobRoles,
+  selectStudentJobRole,
 } from '../api/client';
 import {
   User,
@@ -26,7 +28,9 @@ import {
   AlertCircle,
   RefreshCw,
   FileText,
-  Award
+  Award,
+  Briefcase,
+  Loader2,
 } from 'lucide-react';
 
 export default function Dashboard() {
@@ -41,6 +45,13 @@ export default function Dashboard() {
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [actionLoadingId, setActionLoadingId] = useState(null);
   const [assignmentError, setAssignmentError] = useState(null);
+
+  // Job Role Selection state
+  const [roles, setRoles] = useState([]);
+  const [rolesLoading, setRolesLoading] = useState(false);
+  const [selectedRole, setSelectedRole] = useState('Software Development Engineer');
+  const [roleStarting, setRoleStarting] = useState(false);
+  const [roleError, setRoleError] = useState(null);
 
   const fetchStudentAssignments = useCallback(async () => {
     if (user?.role !== 'student') return;
@@ -58,6 +69,36 @@ export default function Dashboard() {
   useEffect(() => {
     fetchStudentAssignments();
   }, [fetchStudentAssignments]);
+
+  // Load available canonical job roles
+  useEffect(() => {
+    if (user?.role !== 'student') return;
+    let isMounted = true;
+    const fetchRoles = async () => {
+      setRolesLoading(true);
+      const res = await getAvailableJobRoles();
+      if (isMounted && res.success && res.data?.roles) {
+        setRoles(res.data.roles);
+      }
+      if (isMounted) setRolesLoading(false);
+    };
+    fetchRoles();
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
+
+  const handleStartRoleInterview = async (roleName) => {
+    setRoleStarting(true);
+    setRoleError(null);
+    const res = await selectStudentJobRole(roleName);
+    if (res.success && res.data?.assignment_id) {
+      navigate(`/interview/${res.data.assignment_id}`);
+    } else {
+      setRoleError(res.error || 'Failed to initialize role interview session');
+      setRoleStarting(false);
+    }
+  };
 
   const handleTestProtected = async () => {
     setTestLoading(true);
@@ -195,6 +236,98 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+
+        {/* ROLE SELECTION & SELF-ENROLLMENT SECTION */}
+        {user?.role === 'student' && (
+          <div className="mb-8 p-6 rounded-2xl glass-panel border border-slate-800 relative overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+              <div className="flex items-center space-x-2.5">
+                <Briefcase className="w-5 h-5 text-cyan-400" />
+                <h2 className="text-base font-bold text-white">Select Target Job Role & Start Interview</h2>
+              </div>
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-medium">
+                Verified Question Bank: 1,875 Questions
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
+              Select your target engineering profile to begin an adaptive mock interview. Questions are drawn directly from the official university question bank (25 sets per role, 15 questions per set: 13 conceptual and 2 coding).
+            </p>
+
+            {roleError && (
+              <div className="mb-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800/50 text-rose-300 text-xs flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{roleError}</span>
+              </div>
+            )}
+
+            {rolesLoading && roles.length === 0 ? (
+              <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center space-x-2">
+                <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                <span>Loading available job roles...</span>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-5">
+                {roles.map((r) => {
+                  const isSelected = selectedRole === r.role_name;
+                  return (
+                    <div
+                      key={r.role_id}
+                      onClick={() => setSelectedRole(r.role_name)}
+                      className={`p-4 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                        isSelected
+                          ? 'bg-cyan-950/40 border-cyan-500/80 shadow-lg shadow-cyan-950/40 ring-1 ring-cyan-500/50'
+                          : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900/80'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-2 mb-1.5">
+                          <span className="font-semibold text-white text-sm">{r.role_name}</span>
+                          {isSelected && (
+                            <span className="w-4 h-4 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0">
+                              <Check className="w-3 h-3" />
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400 line-clamp-3 mb-3 leading-relaxed">
+                          {r.description}
+                        </p>
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                        <span>{r.total_sets || 25} Sets • {r.total_questions || 375} Questions</span>
+                        <span className="text-cyan-400 font-sans font-medium">13 Concept + 2 Code</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-800/70">
+              <div className="text-xs text-slate-400">
+                Selected Role: <strong className="text-cyan-300 font-semibold">{selectedRole}</strong>
+              </div>
+              <button
+                onClick={() => handleStartRoleInterview(selectedRole)}
+                disabled={roleStarting || !selectedRole}
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 via-indigo-600 to-violet-600 hover:opacity-95 text-white text-xs font-bold shadow-lg shadow-cyan-600/20 transition flex items-center justify-center space-x-2 disabled:opacity-50"
+              >
+                {roleStarting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    <span>Initializing Interview Session...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4" />
+                    <span>Start Interview for {selectedRole}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* STUDENT ASSIGNED INTERVIEWS SECTION */}
         {user?.role === 'student' && (
@@ -362,9 +495,23 @@ export default function Dashboard() {
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-400 block mb-0.5">Institution Code</span>
-                  <span className="text-slate-200">{user?.institution_id} (Vignan University)</span>
+                  <span className="text-slate-400 block mb-0.5">Institution</span>
+                  <span className="text-slate-200">
+                    {user?.college_name || user?.institution_id} {user?.institution_id === 'VFSTR' ? '(VFSTR Deemed University)' : ''}
+                  </span>
                 </div>
+                {user?.department && (
+                  <div>
+                    <span className="text-slate-400 block mb-0.5">Department / Stream</span>
+                    <span className="font-mono text-slate-200">{user?.department}</span>
+                  </div>
+                )}
+                {user?.contact_number && (
+                  <div>
+                    <span className="text-slate-400 block mb-0.5">Contact Number</span>
+                    <span className="font-mono text-slate-200">{user?.contact_number}</span>
+                  </div>
+                )}
                 <div>
                   <span className="text-slate-400 block mb-0.5">Status</span>
                   <span className="text-emerald-400 capitalize">{user?.account_status}</span>
