@@ -20,5 +20,5 @@ async def health_check():
         "environment": settings.ENVIRONMENT,
         "database": db_status,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "phase": "Phase 1 - Foundation & Core Architecture"
+        "phase": "Production Ready - Full-Stack Architecture"
     }

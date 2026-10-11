@@ -485,7 +485,7 @@ export default function AdminConsole() {
             <div className="relative flex-1 w-full">
               <input
                 type="text"
-                placeholder="Enter Session UUID (e.g., 8dc89042-60a6-40c6-a70c-d6f0f1cb5674)..."
+                placeholder="Enter Session UUID (e.g., 550e8400-e29b-41d4-a716-446655440000)..."
                 value={lookupSessionIdInput}
                 onChange={(e) => setLookupSessionIdInput(e.target.value)}
                 className="w-full rounded-xl bg-slate-950/80 border border-slate-800 focus:border-indigo-500 text-slate-100 placeholder-slate-600 text-xs font-mono px-3.5 py-2.5 transition"
@@ -501,38 +501,24 @@ export default function AdminConsole() {
               <span>Inspect Telemetry</span>
             </button>
           </form>
+        </div>
 
-          {/* Quick-Inspect Pill for active/recent e2e session */}
-          <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-slate-400">
-            <span className="text-[11px] text-slate-500">Quick Inspect Active Session:</span>
-            <button
-              type="button"
-              onClick={() => {
-                const e2eSessionId = '8dc89042-60a6-40c6-a70c-d6f0f1cb5674';
-                setLookupSessionIdInput(e2eSessionId);
-                setSelectedTimelineSessionId(e2eSessionId);
-              }}
-              className="font-mono text-[11px] text-indigo-300 hover:text-indigo-200 bg-slate-950/80 px-2 py-0.5 rounded border border-slate-800 hover:border-slate-700 transition"
-            >
-              8dc89042-60a6-40c6-a70c-d6f0f1cb5674 (E2E Test Session)
-            </button>
+        {/* Server Response Card - Development Diagnostics */}
+        {import.meta.env.DEV && (
+          <div className="p-6 rounded-2xl glass-panel border border-slate-800 mb-8">
+            <h3 className="text-sm font-bold text-white mb-2 flex items-center space-x-2">
+              <Terminal className="w-4 h-4 text-indigo-400" />
+              <span>Server-side Administrator Authorization Payload (Dev Diagnostics)</span>
+            </h3>
+            <p className="text-xs text-slate-400 mb-4">
+              Response received from FastAPI protected route requiring administrator role credentials:
+            </p>
+
+            <pre className="text-xs font-mono text-indigo-300 p-4 bg-slate-950/90 rounded-xl border border-slate-800 overflow-x-auto">
+              {loading ? '/* Fetching authorized telemetry... */' : JSON.stringify(adminTelemetry, null, 2)}
+            </pre>
           </div>
-        </div>
-
-        {/* Server Response Card */}
-        <div className="p-6 rounded-2xl glass-panel border border-slate-800 mb-8">
-          <h3 className="text-sm font-bold text-white mb-2 flex items-center space-x-2">
-            <Terminal className="w-4 h-4 text-indigo-400" />
-            <span>Server-side Administrator Authorization Payload</span>
-          </h3>
-          <p className="text-xs text-slate-400 mb-4">
-            Response received from FastAPI protected route requiring administrator role credentials:
-          </p>
-
-          <pre className="text-xs font-mono text-indigo-300 p-4 bg-slate-950/90 rounded-xl border border-slate-800 overflow-x-auto">
-            {loading ? '/* Fetching authorized telemetry... */' : JSON.stringify(adminTelemetry, null, 2)}
-          </pre>
-        </div>
+        )}
       </main>
 
       {/* CREATE INTERVIEW MODAL */}

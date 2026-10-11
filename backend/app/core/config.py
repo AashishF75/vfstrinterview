@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     AI_TEMPERATURE: float = 0.7
     AI_REQUEST_TIMEOUT_SECONDS: float = 20.0
     INTERVIEW_TOTAL_QUESTIONS_DEFAULT: int = 5
-    ALLOW_MOCK_EVALUATOR_FALLBACK: bool = True
+    ALLOW_MOCK_EVALUATOR_FALLBACK: Optional[bool] = None
 
     @property
     def is_demo_otp_allowed(self) -> bool:
@@ -191,6 +191,22 @@ class Settings(BaseSettings):
             "gemini_model": self.resolved_gemini_model,
             "has_gemini_key": bool(self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip()),
         }
+
+    @model_validator(mode="after")
+    def resolve_mock_evaluator_fallback_default(self) -> "Settings":
+        """
+        Enforce fail-closed AI evaluation in production:
+        Defaults ALLOW_MOCK_EVALUATOR_FALLBACK to False when ENVIRONMENT is 'production' or 'prod'.
+        In development or test environments, defaults to True to allow automated testing
+        and local development unless explicitly overridden.
+        """
+        if self.ALLOW_MOCK_EVALUATOR_FALLBACK is None:
+            env = (self.ENVIRONMENT or "").strip().lower()
+            if env in ("production", "prod"):
+                self.ALLOW_MOCK_EVALUATOR_FALLBACK = False
+            else:
+                self.ALLOW_MOCK_EVALUATOR_FALLBACK = True
+        return self
 
     @model_validator(mode="after")
     def validate_test_mode_database_isolation(self) -> "Settings":

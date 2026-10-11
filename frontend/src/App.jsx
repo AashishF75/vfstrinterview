@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Routes, Route, Link } from 'react-router-dom';
-import { 
-  Activity, 
-  ShieldCheck, 
-  Terminal, 
-  Lock, 
-  GraduationCap, 
-  Users, 
-  Database, 
-  ArrowRight, 
-  CheckCircle2, 
-  RefreshCw, 
+import {
+  Activity,
+  ShieldCheck,
+  Terminal,
+  Lock,
+  GraduationCap,
+  Users,
+  Database,
+  ArrowRight,
+  CheckCircle2,
+  RefreshCw,
   AlertCircle,
   Sparkles,
   ChevronRight,
@@ -85,7 +85,7 @@ function HomePage() {
           <div className="flex items-center space-x-3 text-[11px]">
             <span className="flex items-center space-x-1.5 text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-2 py-0.5 rounded-full">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Phase 2 RBAC & Auth Active</span>
+              <span>Autonomous Placement Intelligence Active</span>
             </span>
             <span className="text-slate-500">|</span>
             <span className="text-slate-400">Vadlamudi, Guntur</span>
@@ -177,13 +177,13 @@ function HomePage() {
               </div>
               <div>
                 <h4 className="text-sm font-semibold text-emerald-200 flex items-center gap-2">
-                  <span>Phase 2 Operational: Secure Authentication & Role-Based Access Control</span>
+                  <span>Production System Operational: Adaptive Placement Intelligence & Level 1 Proctoring</span>
                   <span className="text-[11px] font-normal px-2 py-0.5 rounded-full bg-emerald-400/20 text-emerald-300 border border-emerald-400/30">
-                    Phase 2 of 4
+                    Release v1.0.0
                   </span>
                 </h4>
                 <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                  Real authentication pipeline with bcrypt password verification, signed JWT tokens, role-based authorization guards, rate-limited login protection, and secure admin provisioning is now active.
+                  Full-stack placement training architecture with verified student registration, scheduled university interviews, adaptive technical evaluation, voice interaction, and Level 1 proctoring telemetry is active.
                 </p>
               </div>
             </div>
@@ -297,7 +297,11 @@ function HomePage() {
                   )}
                 </div>
                 <div className="text-[11px] text-slate-400 mt-2">
-                  FastAPI service responding on port 8000
+                  {healthLoading
+                    ? 'Probing configured API backend...'
+                    : healthData
+                    ? 'FastAPI application service connected'
+                    : 'Backend service offline or unreachable'}
                 </div>
               </div>
 
@@ -316,10 +320,10 @@ function HomePage() {
               <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/70">
                 <div className="text-xs text-slate-400 font-medium mb-1">Release & Environment</div>
                 <div className="text-sm font-semibold text-indigo-300">
-                  {healthData ? `${healthData.version} (${healthData.environment})` : 'v1.0.0 (Phase 2)'}
+                  {healthData ? `${healthData.version} (${healthData.environment})` : 'Service Unavailable'}
                 </div>
                 <div className="text-[11px] text-slate-400 mt-2">
-                  {healthData?.phase || 'Phase 2 - Auth & RBAC Active'}
+                  {healthData?.phase || (healthLoading ? 'Checking status...' : 'Service Offline')}
                 </div>
               </div>
 
@@ -348,11 +352,11 @@ function HomePage() {
                 <span className="text-[11px] text-slate-400">Content-Type: application/json</span>
               </div>
               <pre className="text-xs font-mono text-indigo-300 overflow-x-auto p-2 bg-slate-900/40 rounded-lg">
-                {healthLoading 
-                  ? '/* Querying http://127.0.0.1:8000/api/health via Axios client... */' 
-                  : healthData 
-                    ? JSON.stringify(healthData, null, 2) 
-                    : `/* Error: ${healthError} */\n/* Ensure the FastAPI backend server is running on port 8000 */`
+                {healthLoading
+                  ? '/* Querying configured API service via Axios client... */'
+                  : healthData
+                    ? JSON.stringify(healthData, null, 2)
+                    : `/* Error: ${healthError} */\n/* Verify that the backend service is running and accessible */`
                 }
               </pre>
             </div>
@@ -399,11 +403,11 @@ function HomePage() {
               </div>
 
               {/* Step 3 */}
-              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 relative opacity-90">
+              <div className="p-4 rounded-xl bg-indigo-950/40 border border-indigo-600/40 relative">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">Phase 3</span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                    Next Up
+                  <span className="text-[11px] font-bold text-indigo-400 uppercase tracking-wider">Phase 3</span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    Complete & Active
                   </span>
                 </div>
                 <h4 className="text-sm font-semibold text-white mb-1">Adaptive AI Engine</h4>
@@ -413,16 +417,16 @@ function HomePage() {
               </div>
 
               {/* Step 4 */}
-              <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800/80 relative opacity-70">
+              <div className="p-4 rounded-xl bg-indigo-950/40 border border-indigo-600/40 relative">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Phase 4</span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">
-                    Planned
+                  <span className="text-[11px] font-bold text-indigo-400 uppercase tracking-wider">Phase 4</span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    Complete & Active
                   </span>
                 </div>
-                <h4 className="text-sm font-semibold text-slate-300 mb-1">Proctoring & Drive</h4>
+                <h4 className="text-sm font-semibold text-white mb-1">Proctoring & Operations</h4>
                 <p className="text-xs text-slate-400">
-                  Webcam/audio proctoring, live code compilation sandbox, and automated Google Drive report archival.
+                  Webcam face presence, Level 1 integrity telemetry, speech voice input/output, and institutional registry assignment.
                 </p>
               </div>
             </div>
@@ -442,7 +446,7 @@ function HomePage() {
           </div>
 
           <div className="text-slate-400 text-center md:text-right">
-            Phase 2 Authentication Operational • Next Phase: Adaptive AI Mock Interview Engine
+            Adaptive Interview Intelligence Operational • Full-Stack Platform Active
           </div>
         </div>
       </footer>

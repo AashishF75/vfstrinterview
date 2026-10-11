@@ -162,11 +162,53 @@ export default function InterviewRoom() {
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (!sessionId || proctoringQueueRef.current.length === 0) return;
+
+      const rawApiUrl = import.meta.env.VITE_API_URL;
+      let apiBase = typeof rawApiUrl === 'string' ? rawApiUrl.trim().replace(/\/+$/, '') : '';
+
+      // Preserve local development support with safe dev fallback
+      if (!apiBase && import.meta.env.DEV) {
+        apiBase = 'http://localhost:8000';
+      }
+
+      let isValidBackendUrl = false;
+      try {
+        const parsed = new URL(apiBase);
+        isValidBackendUrl = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+      } catch {
+        isValidBackendUrl = false;
+      }
+
+      // Never send proctoring events to frontend origin if backend URL is missing or invalid
+      if (!isValidBackendUrl) {
+        if (import.meta.env.DEV) {
+          console.warn('[Proctoring] Skipping beforeunload sendBeacon: backend API URL is missing or invalid.');
+        }
+        return;
+      }
+
+      if (typeof navigator === 'undefined' || !navigator.sendBeacon) {
+        if (import.meta.env.DEV) {
+          console.warn('[Proctoring] navigator.sendBeacon is unavailable; keeping events in queue.');
+        }
+        return;
+      }
+
       const batch = [...proctoringQueueRef.current];
-      proctoringQueueRef.current = [];
-      if (navigator.sendBeacon) {
+      try {
         const blob = new Blob([JSON.stringify({ events: batch })], { type: 'application/json' });
-        navigator.sendBeacon(`/api/interview-rooms/sessions/${sessionId}/proctoring-events`, blob);
+        const beaconUrl = `${apiBase}/api/interview-rooms/sessions/${sessionId}/proctoring-events`;
+        const accepted = navigator.sendBeacon(beaconUrl, blob);
+        if (accepted) {
+          // Browser accepted payload for queuing; remove transmitted events from queue
+          proctoringQueueRef.current = proctoringQueueRef.current.slice(batch.length);
+        } else if (import.meta.env.DEV) {
+          console.warn('[Proctoring] navigator.sendBeacon rejected payload queuing; keeping events in queue.');
+        }
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn('[Proctoring] Failed to execute sendBeacon during beforeunload:', err?.message || err);
+        }
       }
     };
 

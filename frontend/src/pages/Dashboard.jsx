@@ -1,22 +1,22 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { 
-  getProtectedTest, 
+import {
+  getProtectedTest,
   getAdminOnlyTest,
   getStudentAssignments,
   acceptStudentAssignment,
   startStudentInterview,
   completeStudentInterview
 } from '../api/client';
-import { 
-  User, 
-  Shield, 
-  LogOut, 
-  CheckCircle2, 
-  Sparkles, 
-  Terminal, 
-  Activity, 
+import {
+  User,
+  Shield,
+  LogOut,
+  CheckCircle2,
+  Sparkles,
+  Terminal,
+  Activity,
   Lock,
   Calendar,
   Clock,
@@ -328,10 +328,8 @@ export default function Dashboard() {
               </div>
             )}
           </div>
-        )}
-
-        {/* User Profile & Security Diagnostics Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+        )}        {/* User Profile & Security Specifications */}
+        <div className={`grid grid-cols-1 ${import.meta.env.DEV ? 'lg:grid-cols-3' : 'max-w-2xl'} gap-6 mb-8`}>
           {/* User Metadata Card */}
           <div className="glass-panel p-6 rounded-2xl border border-slate-800 flex flex-col justify-between">
             <div>
@@ -379,63 +377,65 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Interactive Server Authorization Probes Card */}
-          <div className="lg:col-span-2 glass-panel p-6 rounded-2xl border border-slate-800">
-            <h3 className="text-sm font-bold text-white mb-2 flex items-center space-x-2">
-              <Shield className="w-4 h-4 text-indigo-400" />
-              <span>Live Server-Side Authorization Verification</span>
-            </h3>
-            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
-              Verify that the backend FastAPI dependencies enforce role-based authorization on the server. Non-admin users are strictly rejected with <strong>403 Forbidden</strong>.
-            </p>
+          {/* Interactive Server Authorization Probes Card - Development Only */}
+          {import.meta.env.DEV && (
+            <div className="lg:col-span-2 glass-panel p-6 rounded-2xl border border-slate-800">
+              <h3 className="text-sm font-bold text-white mb-2 flex items-center space-x-2">
+                <Shield className="w-4 h-4 text-indigo-400" />
+                <span>Live Server-Side Authorization Verification (Dev Diagnostics)</span>
+              </h3>
+              <p className="text-xs text-slate-400 mb-5 leading-relaxed">
+                Verify that the backend FastAPI dependencies enforce role-based authorization on the server. Non-admin users are strictly rejected with <strong>403 Forbidden</strong>.
+              </p>
 
-            <div className="flex flex-wrap gap-3 mb-5">
-              <button
-                id="test-protected-btn"
-                onClick={handleTestProtected}
-                disabled={testLoading}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center space-x-2"
-              >
-                <Activity className="w-3.5 h-3.5" />
-                <span>Probe /api/auth/protected-test (Any Role)</span>
-              </button>
+              <div className="flex flex-wrap gap-3 mb-5">
+                <button
+                  id="test-protected-btn"
+                  onClick={handleTestProtected}
+                  disabled={testLoading}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center space-x-2"
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                  <span>Probe /api/auth/protected-test (Any Role)</span>
+                </button>
 
-              <button
-                id="test-admin-only-btn"
-                onClick={handleTestAdminOnly}
-                disabled={testLoading}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition flex items-center space-x-2"
-              >
-                <Lock className="w-3.5 h-3.5 text-amber-400" />
-                <span>Probe /api/auth/admin-only (Admin Restricted)</span>
-              </button>
-            </div>
-
-            {/* Probe Output Box */}
-            <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-4">
-              <div className="flex items-center justify-between text-xs text-slate-400 font-mono mb-2 pb-2 border-b border-slate-800/80">
-                <span className="flex items-center space-x-2">
-                  <Terminal className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>{testResult?.endpoint || 'Diagnostics Terminal'}</span>
-                </span>
-                {testResult && (
-                  <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
-                    testResult.status === 200 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                  }`}>
-                    HTTP {testResult.status} {testResult.status === 200 ? 'OK' : testResult.status === 403 ? 'FORBIDDEN' : 'DENIED'}
-                  </span>
-                )}
+                <button
+                  id="test-admin-only-btn"
+                  onClick={handleTestAdminOnly}
+                  disabled={testLoading}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition flex items-center space-x-2"
+                >
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Probe /api/auth/admin-only (Admin Restricted)</span>
+                </button>
               </div>
-              <pre className="text-xs font-mono text-indigo-300 overflow-x-auto p-2 bg-slate-900/50 rounded-lg">
-                {testLoading 
-                  ? '/* Querying backend endpoint with Bearer token... */' 
-                  : testResult 
-                    ? JSON.stringify(testResult.data, null, 2) 
-                    : '/* Click a probe button above to test authentication and role permissions */'
-                }
-              </pre>
+
+              {/* Probe Output Box */}
+              <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-4">
+                <div className="flex items-center justify-between text-xs text-slate-400 font-mono mb-2 pb-2 border-b border-slate-800/80">
+                  <span className="flex items-center space-x-2">
+                    <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>{testResult?.endpoint || 'Diagnostics Terminal'}</span>
+                  </span>
+                  {testResult && (
+                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                      testResult.status === 200 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                    }`}>
+                      HTTP {testResult.status} {testResult.status === 200 ? 'OK' : testResult.status === 403 ? 'FORBIDDEN' : 'DENIED'}
+                    </span>
+                  )}
+                </div>
+                <pre className="text-xs font-mono text-indigo-300 overflow-x-auto p-2 bg-slate-900/50 rounded-lg">
+                  {testLoading
+                    ? '/* Querying backend endpoint with Bearer token... */'
+                    : testResult
+                      ? JSON.stringify(testResult.data, null, 2)
+                      : '/* Click a probe button above to test authentication and role permissions */'
+                  }
+                </pre>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Phase Roadmap Notice */}
