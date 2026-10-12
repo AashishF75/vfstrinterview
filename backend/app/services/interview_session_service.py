@@ -670,6 +670,12 @@ class InterviewSessionService:
                     "cloud AI models. Evaluations reflect automated language model rubrics based on candidate responses, "
                     "and do not claim objective or bias-free scoring."
                 )
+            elif provider.get_mode() == EvaluatorMode.NEMOTRON:
+                disclaimer_text = (
+                    "AI EVALUATION NOTICE: Questions and evaluations were generated using NVIDIA Nemotron "
+                    "cloud AI models. Evaluations reflect automated language model rubrics based on candidate responses, "
+                    "and do not claim objective or bias-free scoring."
+                )
             else:
                 disclaimer_text = (
                     "AI EVALUATION NOTICE: Evaluations reflect automated algorithmic rubrics based "

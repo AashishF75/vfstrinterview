@@ -1158,19 +1158,822 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
         }
 
 
-def get_ai_provider() -> BaseInterviewAIProvider:
-    """
-    Factory resolving the active AI provider interface.
-    - If provider is 'gemini' or 'google': strictly requires GEMINI_API_KEY and returns GeminiInterviewAIProvider.
-      Fails closed if GEMINI_API_KEY is missing (never silently falls back to mock).
-    - If provider is 'mock', 'rule_engine', or 'mock_rule_engine': explicitly returns MockRuleEngineProvider.
-    - If provider is 'openai' or 'gpt': strictly requires OPENAI_API_KEY.
-    - If provider is unconfigured/empty: returns MockRuleEngineProvider ONLY when ALLOW_MOCK_EVALUATOR_FALLBACK is True.
-    - If an unsupported provider name is specified: raises AIProviderUnavailableError.
-    """
-    provider_name = (settings.AI_PROVIDER or "").strip().lower()
+# ==============================================================================
+# NVIDIA Nemotron Structured Output Schemas & Implementation
+# ==============================================================================
 
-    if provider_name in ["gemini", "google"]:
+# Re-use canonical schemas to guarantee interface consistency across LLM providers
+NemotronEvaluationSchema = GeminiEvaluationSchema
+NemotronQuestionSchema = GeminiQuestionSchema
+NemotronScorecardSchema = GeminiScorecardSchema
+
+
+class NemotronInterviewAIProvider(BaseInterviewAIProvider):
+    """
+    Production-ready NVIDIA Nemotron AI provider implementation using OpenAI-compatible chat completions REST API.
+    Connects to the official NVIDIA NIM API (https://integrate.api.nvidia.com/v1) or self-hosted NIM containers using httpx.
+    Validates model responses through Pydantic schemas and strictly handles
+    timeouts, quota exhaustion / rate-limits (HTTP 429), authentication failures (HTTP 401/403),
+    service unavailability, and malformed JSON.
+    Never exposes API keys in URLs, error messages, or telemetry logs.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model_name: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+        max_retries: Optional[int] = None,
+        total_deadline_seconds: Optional[float] = None,
+    ):
+        if not api_key or not api_key.strip():
+            raise AIProviderUnavailableError("NVIDIA_API_KEY must not be empty.")
+        self._api_key = api_key.strip()
+        self.model_name = (model_name or settings.resolved_nemotron_model).strip()
+        self.base_url = (base_url or settings.NVIDIA_API_BASE_URL).rstrip("/")
+        self.timeout_seconds = float(timeout_seconds or settings.AI_REQUEST_TIMEOUT_SECONDS)
+        self.max_retries = int(
+            max_retries if max_retries is not None else getattr(settings, "AI_MAX_RETRIES", 2)
+        )
+        self.total_deadline_seconds = float(
+            total_deadline_seconds if total_deadline_seconds is not None else getattr(
+                settings, "AI_TOTAL_REQUEST_DEADLINE_SECONDS", 30.0
+            )
+        )
+        self.base_delay = float(getattr(settings, "AI_RETRY_BASE_DELAY_SECONDS", 1.0))
+        self.backoff_factor = float(getattr(settings, "AI_RETRY_BACKOFF_FACTOR", 1.5))
+        self.max_delay = float(getattr(settings, "AI_RETRY_MAX_DELAY_SECONDS", 10.0))
+        self.max_output_tokens = int(getattr(settings, "AI_MAX_OUTPUT_TOKENS", 1024))
+
+    def get_mode(self) -> EvaluatorMode:
+        return EvaluatorMode.NEMOTRON
+
+    def _redact_secrets(self, text: str) -> str:
+        """Sanitizes sensitive tokens, API keys, and credentials from error details."""
+        if not text:
+            return ""
+        cleaned = re.sub(r"nvapi-[0-9A-Za-z\-_]+", "[REDACTED]", text)
+        cleaned = re.sub(r"AIza[0-9A-Za-z\-_]{35}", "[REDACTED]", cleaned)
+        if self._api_key:
+            cleaned = cleaned.replace(self._api_key, "[REDACTED]")
+        return cleaned
+
+    def _clean_json_text(self, text: str) -> str:
+        """Strips markdown code fences and whitespace from model output."""
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE)
+        return cleaned.strip()
+
+    async def _call_nemotron_api(
+        self,
+        prompt: str,
+        system_instruction: Optional[str] = None,
+        task: str = "generic",
+        schema: Optional[Type[BaseModel]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Executes HTTP POST request to NVIDIA API with header-based Bearer authentication,
+        bounded retries for transient errors, Retry-After header compliance,
+        deadline enforcement, token usage telemetry, and structured JSON parsing.
+        """
+        if self.base_url.endswith("/chat/completions"):
+            url = self.base_url
+        else:
+            url = f"{self.base_url}/chat/completions"
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+        messages: List[Dict[str, str]] = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+        messages.append({"role": "user", "content": prompt})
+
+        payload: Dict[str, Any] = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": settings.AI_TEMPERATURE,
+            "max_tokens": self.max_output_tokens,
+            "response_format": {"type": "json_object"},
+        }
+
+        start_time = time.monotonic()
+        deadline = start_time + self.total_deadline_seconds
+        response = None
+        attempt_count = 0
+
+        for attempt in range(self.max_retries + 1):
+            attempt_count += 1
+            now = time.monotonic()
+            remaining_deadline = deadline - now
+            if remaining_deadline <= 0:
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="nemotron",
+                        model=self.model_name,
+                        outcome="deadline_exceeded",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        http_status=None,
+                    )
+                )
+                raise AIProviderError(
+                    f"Nemotron API request exceeded total deadline of {self.total_deadline_seconds}s."
+                )
+
+            attempt_timeout = min(self.timeout_seconds, remaining_deadline)
+
+            try:
+                async with httpx.AsyncClient(timeout=attempt_timeout) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+            except httpx.TimeoutException:
+                if attempt < self.max_retries:
+                    backoff = compute_backoff_delay(
+                        attempt, self.base_delay, self.backoff_factor, self.max_delay
+                    )
+                    rem_after_call = deadline - time.monotonic()
+                    if backoff <= rem_after_call:
+                        logger.warning(
+                            "Nemotron API timeout on attempt %d/%d; retrying in %.2fs...",
+                            attempt + 1,
+                            self.max_retries + 1,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        logger.warning(
+                            "Retry backoff (%.2fs) exceeds remaining deadline budget (%.1fs); stopping retry.",
+                            backoff,
+                            rem_after_call,
+                        )
+                        latency_ms = (time.monotonic() - start_time) * 1000
+                        log_ai_telemetry(
+                            AITelemetryRecord(
+                                task=task,
+                                provider="nemotron",
+                                model=self.model_name,
+                                outcome="deadline_exceeded",
+                                latency_ms=latency_ms,
+                                attempts=attempt_count,
+                                http_status=None,
+                            )
+                        )
+                        raise AIProviderError(
+                            f"Nemotron API retry backoff ({backoff:.1f}s) exceeds remaining request deadline ({rem_after_call:.1f}s)."
+                        )
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="nemotron",
+                        model=self.model_name,
+                        outcome="timeout",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        http_status=None,
+                    )
+                )
+                logger.error("Nemotron API request timed out after %.1fs", self.timeout_seconds)
+                raise AIProviderError(f"Nemotron API request timed out after {self.timeout_seconds}s.")
+            except httpx.RequestError as exc:
+                if attempt < self.max_retries:
+                    backoff = compute_backoff_delay(
+                        attempt, self.base_delay, self.backoff_factor, self.max_delay
+                    )
+                    rem_after_call = deadline - time.monotonic()
+                    if backoff <= rem_after_call:
+                        logger.warning(
+                            "Nemotron API network request error (%s) on attempt %d/%d; retrying in %.2fs...",
+                            type(exc).__name__,
+                            attempt + 1,
+                            self.max_retries + 1,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        logger.warning(
+                            "Retry backoff (%.2fs) exceeds remaining deadline budget (%.1fs); stopping retry.",
+                            backoff,
+                            rem_after_call,
+                        )
+                        latency_ms = (time.monotonic() - start_time) * 1000
+                        log_ai_telemetry(
+                            AITelemetryRecord(
+                                task=task,
+                                provider="nemotron",
+                                model=self.model_name,
+                                outcome="deadline_exceeded",
+                                latency_ms=latency_ms,
+                                attempts=attempt_count,
+                                http_status=None,
+                            )
+                        )
+                        raise AIProviderError(
+                            f"Nemotron API retry backoff ({backoff:.1f}s) exceeds remaining request deadline ({rem_after_call:.1f}s)."
+                        )
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="nemotron",
+                        model=self.model_name,
+                        outcome="network_error",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        http_status=None,
+                    )
+                )
+                logger.error("Nemotron API network request error: %s", type(exc).__name__)
+                raise AIProviderError(f"Nemotron network connection failed: {type(exc).__name__}")
+
+            # Retryable transient status codes: 429, 500, 502, 503, 504
+            if response.status_code in [429, 500, 502, 503, 504]:
+                if attempt < self.max_retries:
+                    retry_after = (
+                        parse_retry_after(response.headers.get("Retry-After"))
+                        if response.status_code == 429
+                        else None
+                    )
+                    if retry_after is not None:
+                        sleep_delay = retry_after
+                    else:
+                        sleep_delay = compute_backoff_delay(
+                            attempt, self.base_delay, self.backoff_factor, self.max_delay
+                        )
+
+                    rem_after_call = deadline - time.monotonic()
+                    if sleep_delay > rem_after_call:
+                        logger.warning(
+                            "Retry delay (%.2fs) exceeds remaining deadline budget (%.1fs); stopping retry.",
+                            sleep_delay,
+                            rem_after_call,
+                        )
+                        latency_ms = (time.monotonic() - start_time) * 1000
+                        log_ai_telemetry(
+                            AITelemetryRecord(
+                                task=task,
+                                provider="nemotron",
+                                model=self.model_name,
+                                outcome="deadline_exceeded",
+                                latency_ms=latency_ms,
+                                attempts=attempt_count,
+                                http_status=response.status_code,
+                            )
+                        )
+                        raise AIProviderError(
+                            f"Nemotron API retry delay ({sleep_delay:.1f}s) exceeds remaining request deadline ({rem_after_call:.1f}s)."
+                        )
+
+                    logger.warning(
+                        "Transient Nemotron API response HTTP %d (attempt %d/%d); sleeping %.2fs before retry...",
+                        response.status_code,
+                        attempt + 1,
+                        self.max_retries + 1,
+                        sleep_delay,
+                    )
+                    await asyncio.sleep(sleep_delay)
+                    continue
+                else:
+                    break
+
+            # Permanent status code (200, 400, 401, 403, 404, 422, etc.) -> break loop
+            break
+
+        if response.status_code in [401, 403]:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="auth_failure",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=response.status_code,
+                )
+            )
+            logger.error("Nemotron API returned authentication error HTTP %d", response.status_code)
+            raise AIProviderError("Nemotron API authentication failed. Verify configured NVIDIA_API_KEY.")
+        elif response.status_code == 429:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="rate_limit",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=429,
+                )
+            )
+            logger.error("Nemotron API returned rate-limit or quota exhaustion HTTP 429")
+            raise AIProviderError("Nemotron API quota or rate limit exceeded. Please retry shortly.")
+        elif response.status_code in [500, 502, 503, 504]:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="service_unavailable",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=response.status_code,
+                )
+            )
+            logger.error("Nemotron API service unavailable HTTP %d", response.status_code)
+            err_detail = ""
+            try:
+                err_data = response.json()
+                err_detail = err_data.get("error", {}).get("message", "")
+            except Exception:
+                pass
+            if err_detail:
+                err_detail = self._redact_secrets(err_detail)
+                raise AIProviderError(
+                    f"Nemotron AI service is temporarily unavailable (HTTP {response.status_code}): {err_detail}"
+                )
+            raise AIProviderError(f"Nemotron AI service is temporarily unavailable (HTTP {response.status_code}).")
+        elif response.is_error:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="permanent_error",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=response.status_code,
+                )
+            )
+            logger.error("Nemotron API error HTTP %d", response.status_code)
+            err_detail = ""
+            try:
+                err_data = response.json()
+                err_detail = err_data.get("error", {}).get("message", "")
+            except Exception:
+                pass
+            if err_detail:
+                err_detail = self._redact_secrets(err_detail)
+                raise AIProviderError(f"Nemotron API returned HTTP {response.status_code}: {err_detail}")
+            raise AIProviderError(f"Nemotron API returned error HTTP {response.status_code}.")
+
+        try:
+            resp_data = response.json()
+        except Exception:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="invalid_json",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    http_status=200,
+                )
+            )
+            raise AIProviderError("Nemotron API returned non-JSON HTTP body.")
+
+        # Extract usage metadata safely
+        usage_meta = resp_data.get("usage")
+        prompt_tokens = None
+        candidates_tokens = None
+        total_tokens = None
+        if isinstance(usage_meta, dict):
+            prompt_tokens = usage_meta.get("prompt_tokens")
+            candidates_tokens = usage_meta.get("completion_tokens")
+            total_tokens = usage_meta.get("total_tokens")
+
+        choices = resp_data.get("choices", [])
+        if not choices:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="empty_candidates",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
+            raise AIProviderError("Nemotron returned no completion choices.")
+
+        first_choice = choices[0]
+        message = first_choice.get("message", {})
+        raw_text = message.get("content", "")
+        if not raw_text or not str(raw_text).strip():
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="empty_content",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
+            raise AIProviderError("Nemotron choice contains empty message content.")
+
+        cleaned_json = self._clean_json_text(str(raw_text))
+
+        try:
+            parsed = json.loads(cleaned_json)
+        except json.JSONDecodeError as exc:
+            logger.error("Nemotron response is not valid JSON: %s", exc)
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="invalid_content_json",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
+            raise AIProviderError("Nemotron response could not be parsed as valid JSON.")
+
+        if not isinstance(parsed, dict):
+            latency_ms = (time.monotonic() - start_time) * 1000
+            log_ai_telemetry(
+                AITelemetryRecord(
+                    task=task,
+                    provider="nemotron",
+                    model=self.model_name,
+                    outcome="invalid_content_structure",
+                    latency_ms=latency_ms,
+                    attempts=attempt_count,
+                    prompt_tokens=prompt_tokens,
+                    candidates_tokens=candidates_tokens,
+                    total_tokens=total_tokens,
+                    http_status=200,
+                )
+            )
+            raise AIProviderError("Nemotron response did not return a JSON object.")
+
+        if schema is not None:
+            try:
+                schema.model_validate(parsed)
+            except Exception as exc:
+                logger.error("Nemotron %s schema validation failed: %s", task, exc)
+                latency_ms = (time.monotonic() - start_time) * 1000
+                log_ai_telemetry(
+                    AITelemetryRecord(
+                        task=task,
+                        provider="nemotron",
+                        model=self.model_name,
+                        outcome="validation_error",
+                        latency_ms=latency_ms,
+                        attempts=attempt_count,
+                        prompt_tokens=prompt_tokens,
+                        candidates_tokens=candidates_tokens,
+                        total_tokens=total_tokens,
+                        http_status=200,
+                    )
+                )
+                schema_name = "evaluation" if "evaluate" in task else ("question" if "question" in task else ("scorecard" if "scorecard" in task else task))
+                raise AIProviderError(f"Nemotron response did not match the required {schema_name} schema.")
+
+        latency_ms = (time.monotonic() - start_time) * 1000
+        log_ai_telemetry(
+            AITelemetryRecord(
+                task=task,
+                provider="nemotron",
+                model=self.model_name,
+                outcome="success",
+                latency_ms=latency_ms,
+                attempts=attempt_count,
+                prompt_tokens=prompt_tokens,
+                candidates_tokens=candidates_tokens,
+                total_tokens=total_tokens,
+                http_status=200,
+            )
+        )
+
+        return parsed
+
+    async def generate_question(
+        self,
+        topic: str,
+        instructions: str,
+        difficulty: QuestionDifficulty,
+        question_index: int,
+        previous_questions: List[str],
+    ) -> Dict[str, Any]:
+        system_prompt = (
+            "You are an expert technical interviewer assessing undergraduate computer science engineering candidates. "
+            "Generate a single, technically rigorous interview question based on the assigned topic and instructions, "
+            f"specifically targeting the '{difficulty.value}' difficulty tier:\n"
+            "- easy: Foundational conceptual clarity (standard headers, port numbers, baseline definitions).\n"
+            "- medium: Operational workflows, calculation, implementation mechanics.\n"
+            "- hard: System architecture, state tables, trade-offs, advanced troubleshooting.\n\n"
+            "CRITICAL REQUIREMENTS:\n"
+            "1. Do NOT repeat or closely paraphrase any previous questions provided.\n"
+            "2. Output strictly JSON conforming to: "
+            "{\"question_text\": string, \"topic\": string, \"difficulty\": string}.\n"
+            "3. Ensure 'difficulty' matches the requested tier."
+        )
+        prev_q_str = "\n".join(f"- {q}" for q in previous_questions) if previous_questions else "(None)"
+        user_prompt = (
+            f"Interview Topic: {topic}\n"
+            f"Special Instructions: {instructions or 'None'}\n"
+            f"Target Difficulty: {difficulty.value}\n"
+            f"Question Index: {question_index}\n"
+            f"Previous Questions Asked in this Session:\n{prev_q_str}\n\n"
+            "Generate the next question as strict JSON."
+        )
+        data = await self._call_nemotron_api(
+            prompt=user_prompt,
+            system_instruction=system_prompt,
+            task="generate_question",
+            schema=NemotronQuestionSchema,
+        )
+        try:
+            validated = NemotronQuestionSchema.model_validate(data)
+        except Exception as exc:
+            logger.error("Nemotron question schema validation failed: %s", exc)
+            raise AIProviderError("Nemotron response did not match the required question schema.")
+
+        return {
+            "question_text": validated.question_text,
+            "topic": validated.topic,
+            "difficulty": validated.difficulty,
+        }
+
+    async def evaluate_answer(
+        self,
+        question: str,
+        answer: str,
+        difficulty: QuestionDifficulty,
+        topic: str,
+        expected_answer: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        system_prompt = (
+            "You are an expert technical interviewer assessing university engineering students. "
+            "Evaluate the candidate's answer using a rigorous multi-dimensional rubric:\n"
+            "1. RELEVANCE & CORRECTNESS: Does the answer directly address the specific question asked? "
+            "Are mechanisms, concepts, and interactions factually and technically correct? "
+            "If reference criteria are provided, evaluate alignment without requiring verbatim matching.\n"
+            "2. COMPLETENESS & DEPTH: Does the answer cover the essential steps and operational nuances expected for the difficulty tier?\n"
+            "3. CLARITY & COHERENCE (ANTI-KEYWORD STUFFING): CRITICAL: Do NOT reward answers that merely dump buzzwords without explanation. "
+            "Penalize disjointed keyword lists, hallucinated protocols, or incorrect associations.\n"
+            "4. SCORING SCALE (0.0 to 10.0):\n"
+            "   - 9.0 - 10.0: Flawless technical mastery with precise architecture and operational detail.\n"
+            "   - 7.5 - 8.9: Proficient, technically sound response with minor omissions.\n"
+            "   - 5.0 - 7.4: Satisfactory baseline understanding, but lacks depth or misses key mechanisms.\n"
+            "   - 1.0 - 4.9: Flawed understanding, significant inaccuracies, keyword stuffing without substance, or superficial attempt.\n"
+            "   - 0.0: Blank, irrelevant, or nonsense response.\n\n"
+            "Output strictly JSON conforming to: "
+            "{\"score\": float (0.0-10.0), \"feedback\": string, \"strengths\": [string], \"improvements\": [string], \"rationale\": string}."
+        )
+        prompt_parts = [
+            f"Topic: {topic}",
+            f"Difficulty Tier: {difficulty.value}",
+            f"Question Asked:\n{question}",
+        ]
+        if expected_answer and expected_answer.strip():
+            prompt_parts.append(f"Reference / Expected Answer Criteria:\n{expected_answer.strip()}")
+        if keywords:
+            prompt_parts.append(f"Key Technical Concepts / Keywords Expected: {', '.join(keywords)}")
+        prompt_parts.append(f"Candidate's Submitted Answer:\n{answer}")
+        prompt_parts.append("Evaluate the candidate's response and output strictly conforming JSON.")
+        user_prompt = "\n\n".join(prompt_parts)
+
+        data = await self._call_nemotron_api(
+            prompt=user_prompt,
+            system_instruction=system_prompt,
+            task="evaluate_answer",
+            schema=NemotronEvaluationSchema,
+        )
+        try:
+            validated = NemotronEvaluationSchema.model_validate(data)
+        except Exception as exc:
+            logger.error("Nemotron answer evaluation schema validation failed: %s", exc)
+            raise AIProviderError("Nemotron response did not match the required evaluation schema.")
+
+        return {
+            "score": validated.score,
+            "feedback": validated.feedback,
+            "strengths": validated.strengths if validated.strengths else ["Addressed prompt directly."],
+            "improvements": validated.improvements if validated.improvements else ["Continue maintaining technical precision."],
+            "rationale": validated.rationale or validated.feedback,
+        }
+
+    async def generate_scorecard_summary(
+        self,
+        responses: List[Dict[str, Any]],
+        interview_title: str,
+    ) -> Dict[str, Any]:
+        if not responses or not isinstance(responses, list):
+            return {
+                "overall_score": 0.0,
+                "percentage_score": 0.0,
+                "performance_level": "Needs Improvement",
+                "summary_feedback": "No questions were completed during this session.",
+                "strengths": [],
+                "areas_for_growth": ["Complete the interview session to receive evaluation."],
+            }
+
+        valid_scores = [
+            float(r.get("evaluation_score", r.get("score", 0.0)))
+            for r in responses if isinstance(r, dict)
+        ]
+        calc_overall = round(sum(valid_scores) / max(1, len(valid_scores)), 1)
+        calc_percentage = round((calc_overall / 10.0) * 100.0, 1)
+
+        system_prompt = (
+            "You are an expert technical interviewer summarizing a candidate's completed adaptive mock interview session. "
+            "Review all evaluated questions, scores, and feedback to formulate a holistic evaluation summary.\n"
+            "Assign performance_level strictly based on overall score:\n"
+            "- >= 8.5: 'Exceptional'\n"
+            "- 7.0 - 8.4: 'Proficient'\n"
+            "- 5.0 - 6.9: 'Satisfactory'\n"
+            "- < 5.0: 'Needs Improvement'\n\n"
+            "Output strictly JSON conforming to: "
+            "{\"overall_score\": float, \"percentage_score\": float, \"performance_level\": string, \"summary_feedback\": string, \"strengths\": [string], \"areas_for_growth\": [string]}."
+        )
+        resp_summary_lines = []
+        for r in responses:
+            score_val = r.get("evaluation_score", r.get("score", 0.0))
+            feedback_val = r.get("evaluation_feedback", r.get("feedback", ""))
+            resp_summary_lines.append(
+                f"Q{r.get('question_index')}: {r.get('question_text')} "
+                f"[{r.get('difficulty')} tier] - Score: {score_val}/10 - Feedback: {feedback_val}"
+            )
+        user_prompt = (
+            f"Interview Title: {interview_title}\n"
+            f"Question Evaluations:\n" + "\n".join(resp_summary_lines) + "\n\n"
+            f"Calculated Overall Score: {calc_overall}/10 ({calc_percentage}%)\n\n"
+            "Provide the finalized holistic performance summary as strict JSON."
+        )
+        data = await self._call_nemotron_api(
+            prompt=user_prompt,
+            system_instruction=system_prompt,
+            task="generate_scorecard_summary",
+            schema=NemotronScorecardSchema,
+        )
+        try:
+            validated = NemotronScorecardSchema.model_validate(data)
+        except Exception as exc:
+            logger.error("Nemotron scorecard summary schema validation failed: %s; using calculated fallback", exc)
+            raise AIProviderError("Nemotron response did not match the required scorecard schema.")
+
+        return {
+            "overall_score": validated.overall_score,
+            "percentage_score": validated.percentage_score,
+            "performance_level": validated.performance_level,
+            "summary_feedback": validated.summary_feedback,
+            "strengths": validated.strengths[:4],
+            "areas_for_growth": validated.areas_for_growth[:4],
+        }
+
+
+# ==============================================================================
+# Controlled Single-Pass Fallback Wrapper
+# ==============================================================================
+
+class FallbackInterviewAIProvider(BaseInterviewAIProvider):
+    """
+    Controlled fallback provider wrapper executing primary provider first,
+    and falling back to secondary provider exactly once if the primary encounters
+    AIProviderError or AIProviderUnavailableError.
+
+    Guards against uncontrolled retry loops:
+    - Exactly one fallback attempt per method invocation.
+    - No reciprocal or cyclic retries (primary -> fallback only, never fallback -> primary).
+    - Inherits and enforces bounded deadline budgets.
+    - Preserves primary evaluator mode semantics.
+    """
+
+    def __init__(self, primary: BaseInterviewAIProvider, fallback: BaseInterviewAIProvider):
+        self.primary = primary
+        self.fallback = fallback
+
+    def get_mode(self) -> EvaluatorMode:
+        return self.primary.get_mode()
+
+    async def generate_question(
+        self,
+        topic: str,
+        instructions: str,
+        difficulty: QuestionDifficulty,
+        question_index: int,
+        previous_questions: List[str],
+    ) -> Dict[str, Any]:
+        try:
+            return await self.primary.generate_question(
+                topic=topic,
+                instructions=instructions,
+                difficulty=difficulty,
+                question_index=question_index,
+                previous_questions=previous_questions,
+            )
+        except (AIProviderError, AIProviderUnavailableError) as primary_exc:
+            logger.warning(
+                "Primary AI provider (%s) failed during generate_question: %s; invoking fallback provider (%s)...",
+                self.primary.get_mode().value,
+                primary_exc,
+                self.fallback.get_mode().value,
+            )
+            return await self.fallback.generate_question(
+                topic=topic,
+                instructions=instructions,
+                difficulty=difficulty,
+                question_index=question_index,
+                previous_questions=previous_questions,
+            )
+
+    async def evaluate_answer(
+        self,
+        question: str,
+        answer: str,
+        difficulty: QuestionDifficulty,
+        topic: str,
+        expected_answer: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        try:
+            return await self.primary.evaluate_answer(
+                question=question,
+                answer=answer,
+                difficulty=difficulty,
+                topic=topic,
+                expected_answer=expected_answer,
+                keywords=keywords,
+            )
+        except (AIProviderError, AIProviderUnavailableError) as primary_exc:
+            logger.warning(
+                "Primary AI provider (%s) failed during evaluate_answer: %s; invoking fallback provider (%s)...",
+                self.primary.get_mode().value,
+                primary_exc,
+                self.fallback.get_mode().value,
+            )
+            return await self.fallback.evaluate_answer(
+                question=question,
+                answer=answer,
+                difficulty=difficulty,
+                topic=topic,
+                expected_answer=expected_answer,
+                keywords=keywords,
+            )
+
+    async def generate_scorecard_summary(
+        self,
+        responses: List[Dict[str, Any]],
+        interview_title: str,
+    ) -> Dict[str, Any]:
+        try:
+            return await self.primary.generate_scorecard_summary(
+                responses=responses,
+                interview_title=interview_title,
+            )
+        except (AIProviderError, AIProviderUnavailableError) as primary_exc:
+            logger.warning(
+                "Primary AI provider (%s) failed during generate_scorecard_summary: %s; invoking fallback provider (%s)...",
+                self.primary.get_mode().value,
+                primary_exc,
+                self.fallback.get_mode().value,
+            )
+            return await self.fallback.generate_scorecard_summary(
+                responses=responses,
+                interview_title=interview_title,
+            )
+
+
+# ==============================================================================
+# Provider Factory & Resolution
+# ==============================================================================
+
+def _resolve_single_provider(name: str) -> BaseInterviewAIProvider:
+    clean_name = (name or "").strip().lower()
+
+    if clean_name in ["gemini", "google"]:
         if not settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY.strip():
             raise AIProviderUnavailableError(
                 "Gemini AI provider explicitly selected (AI_PROVIDER='gemini'), "
@@ -1186,17 +1989,33 @@ def get_ai_provider() -> BaseInterviewAIProvider:
             total_deadline_seconds=settings.AI_TOTAL_REQUEST_DEADLINE_SECONDS,
         )
 
-    elif provider_name in ["mock", "rule_engine", "mock_rule_engine"]:
+    elif clean_name in ["nemotron", "nvidia", "nemotron_3_ultra"]:
+        if not settings.NVIDIA_API_KEY or not settings.NVIDIA_API_KEY.strip():
+            raise AIProviderUnavailableError(
+                "NVIDIA Nemotron AI provider explicitly selected (AI_PROVIDER='nemotron'), "
+                "but NVIDIA_API_KEY is not configured or is empty. "
+                "Configure a valid NVIDIA_API_KEY or select AI_PROVIDER='mock'."
+            )
+        return NemotronInterviewAIProvider(
+            api_key=settings.NVIDIA_API_KEY,
+            model_name=settings.resolved_nemotron_model,
+            base_url=settings.NVIDIA_API_BASE_URL,
+            timeout_seconds=settings.AI_REQUEST_TIMEOUT_SECONDS,
+            max_retries=settings.AI_MAX_RETRIES,
+            total_deadline_seconds=settings.AI_TOTAL_REQUEST_DEADLINE_SECONDS,
+        )
+
+    elif clean_name in ["mock", "rule_engine", "mock_rule_engine"]:
         return MockRuleEngineProvider()
 
-    elif provider_name in ["openai", "gpt"]:
+    elif clean_name in ["openai", "gpt"]:
         if not settings.OPENAI_API_KEY or not settings.OPENAI_API_KEY.strip():
             raise AIProviderUnavailableError(
                 "OpenAI provider selected but OPENAI_API_KEY is not configured in environment."
             )
         raise AIProviderUnavailableError("Real OpenAI provider requires active verified API key.")
 
-    elif not provider_name:
+    elif not clean_name:
         # Fallback to deterministic rule-based rubric provider when external AI is not configured
         if settings.ALLOW_MOCK_EVALUATOR_FALLBACK:
             return MockRuleEngineProvider()
@@ -1205,6 +2024,31 @@ def get_ai_provider() -> BaseInterviewAIProvider:
         )
 
     raise AIProviderUnavailableError(
-        f"Unsupported AI_PROVIDER '{settings.AI_PROVIDER}'. Supported options: 'gemini', 'mock'."
+        f"Unsupported AI_PROVIDER '{name}'. Supported options: 'gemini', 'nemotron', 'mock'."
     )
+
+
+def get_ai_provider() -> BaseInterviewAIProvider:
+    """
+    Factory resolving the active AI provider interface.
+    - If provider is 'gemini' or 'google': strictly requires GEMINI_API_KEY and returns GeminiInterviewAIProvider.
+      Fails closed if GEMINI_API_KEY is missing (never silently falls back to mock).
+    - If provider is 'nemotron', 'nvidia', or 'nemotron_3_ultra': strictly requires NVIDIA_API_KEY and returns NemotronInterviewAIProvider.
+      Fails closed if NVIDIA_API_KEY is missing.
+    - If provider is 'mock', 'rule_engine', or 'mock_rule_engine': explicitly returns MockRuleEngineProvider.
+    - If provider is 'openai' or 'gpt': strictly requires OPENAI_API_KEY.
+    - If provider is unconfigured/empty: returns MockRuleEngineProvider ONLY when ALLOW_MOCK_EVALUATOR_FALLBACK is True.
+    - If AI_FALLBACK_PROVIDER is configured: returns FallbackInterviewAIProvider executing single-pass fallback
+      without retry loops.
+    - If an unsupported provider name is specified: raises AIProviderUnavailableError.
+    """
+    primary_name = (settings.AI_PROVIDER or "").strip().lower()
+    primary = _resolve_single_provider(primary_name)
+
+    fallback_name = (settings.AI_FALLBACK_PROVIDER or "").strip().lower()
+    if fallback_name and fallback_name != primary_name:
+        fallback = _resolve_single_provider(fallback_name)
+        return FallbackInterviewAIProvider(primary=primary, fallback=fallback)
+
+    return primary
 

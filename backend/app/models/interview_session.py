@@ -26,6 +26,7 @@ class EvaluatorMode(str, Enum):
     AI_PROVIDER = "ai_provider"
     MOCK_RULE_ENGINE = "mock_rule_engine"
     GEMINI = "gemini"
+    NEMOTRON = "nemotron"
     OPENAI = "openai"
     UNAVAILABLE = "unavailable"
 

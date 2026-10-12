@@ -149,12 +149,16 @@ class Settings(BaseSettings):
     DEMO_MODE: bool = False
 
     # Adaptive AI Mock Interview Engine Configuration
-    AI_PROVIDER: Optional[str] = None  # "gemini" | "openai" | None
+    AI_PROVIDER: Optional[str] = None  # "gemini" | "nemotron" | "openai" | None
+    AI_FALLBACK_PROVIDER: Optional[str] = None  # Optional secondary fallback (e.g. "gemini", "mock", None)
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
+    NVIDIA_API_KEY: Optional[str] = None
     AI_MODEL_NAME: Optional[str] = None
     GEMINI_DEFAULT_MODEL: str = "gemini-1.5-flash"
     GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
+    NEMOTRON_DEFAULT_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    NVIDIA_API_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     AI_TEMPERATURE: float = 0.7
     AI_REQUEST_TIMEOUT_SECONDS: float = 20.0
     AI_MAX_RETRIES: int = 2
@@ -215,6 +219,15 @@ class Settings(BaseSettings):
         return model
 
     @property
+    def resolved_nemotron_model(self) -> str:
+        """
+        Resolves the configured Nemotron model identifier with priority:
+        1. AI_MODEL_NAME (if set and non-empty)
+        2. NEMOTRON_DEFAULT_MODEL (defaults to 'nvidia/nemotron-3-ultra-550b-a55b')
+        """
+        return (self.AI_MODEL_NAME or self.NEMOTRON_DEFAULT_MODEL or "nvidia/nemotron-3-ultra-550b-a55b").strip()
+
+    @property
     def target_database_type(self) -> str:
         """Sanitized descriptor of the database target without exposing secrets."""
         uri = (self.MONGODB_URI or "").lower().strip()
@@ -247,8 +260,11 @@ class Settings(BaseSettings):
             "is_remote_or_atlas": self.is_remote_or_atlas,
             "environment": self.ENVIRONMENT,
             "ai_provider": self.AI_PROVIDER or "mock (fallback default)",
+            "ai_fallback_provider": self.AI_FALLBACK_PROVIDER,
             "gemini_model": self.resolved_gemini_model,
             "has_gemini_key": bool(self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip()),
+            "nemotron_model": self.resolved_nemotron_model,
+            "has_nvidia_key": bool(self.NVIDIA_API_KEY and self.NVIDIA_API_KEY.strip()),
             "ai_max_retries": self.AI_MAX_RETRIES,
             "ai_max_output_tokens": self.AI_MAX_OUTPUT_TOKENS,
             "email_dispatch_enabled": self.EMAIL_DISPATCH_ENABLED,
