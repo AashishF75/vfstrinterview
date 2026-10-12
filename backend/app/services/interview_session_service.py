@@ -52,13 +52,47 @@ QUESTIONS_COLLECTION = "interview_questions"
 
 
 def _ensure_utc(dt: Any) -> datetime:
-    """Ensures datetime is timezone-aware UTC, safely normalizing offset-naive MongoDB datetimes."""
+    """
+    Ensures datetime is timezone-aware UTC, safely normalizing:
+    - Offset-naive datetime (safely assumes UTC from MongoDB storage)
+    - Timezone-aware datetime (converted to UTC)
+    - ISO format strings (with or without Z / offset)
+    - Integer/float unix timestamps (seconds or milliseconds)
+    """
     if dt is None:
         return utc_now()
     if isinstance(dt, datetime):
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
-        return dt
+        return dt.astimezone(timezone.utc)
+    if isinstance(dt, (int, float)):
+        try:
+            val = float(dt)
+            ts = val / 1000.0 if val > 1e11 else val
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return utc_now()
+    if isinstance(dt, str):
+        clean_str = dt.strip()
+        if not clean_str:
+            return utc_now()
+        # Handle numeric string timestamp
+        try:
+            val = float(clean_str)
+            ts = val / 1000.0 if val > 1e11 else val
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except ValueError:
+            pass
+        # Handle ISO formatted string
+        try:
+            iso_str = clean_str.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(iso_str)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            logger.warning("Failed to parse datetime string '%s', falling back to utc_now", dt)
+            return utc_now()
     return utc_now()
 
 
@@ -145,15 +179,33 @@ class InterviewSessionService:
         active_session = await db[SESSIONS_COLLECTION].find_one(
             {"assignment_id": assignment_id, "session_status": SessionStatus.IN_PROGRESS.value}
         )
+        now = utc_now()
         if active_session:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="An active interview session is already in progress for this assignment.",
-            )
+            has_raw_exp = active_session.get("expires_at") is not None
+            if has_raw_exp:
+                active_exp = _ensure_utc(active_session.get("expires_at"))
+                if now > active_exp:
+                    # Active session has genuinely expired - mark timed out and allow fresh session creation
+                    await db[SESSIONS_COLLECTION].update_one(
+                        {"session_id": active_session["session_id"]},
+                        {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}},
+                    )
+                    active_session = None
+            if active_session:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An active interview session is already in progress for this assignment.",
+                )
 
         # 4. Initialize session
-        now = utc_now()
-        duration_mins = interview.get("duration_minutes", 45)
+        raw_duration = interview.get("duration_minutes") or 45
+        try:
+            duration_mins = int(raw_duration)
+            if duration_mins <= 0:
+                duration_mins = 45
+        except (ValueError, TypeError):
+            duration_mins = 45
+
         expires_at = now + timedelta(minutes=duration_mins + 5)  # 5 min grace period
         session_id = str(uuid.uuid4())
         total_questions = settings.INTERVIEW_TOTAL_QUESTIONS_DEFAULT
@@ -292,6 +344,7 @@ class InterviewSessionService:
             coding_spec=coding_spec,
             time_remaining_seconds=time_remaining,
             evaluator_mode=provider.get_mode().value,
+            expires_at=expires_at,
         )
 
     @staticmethod
@@ -328,6 +381,15 @@ class InterviewSessionService:
                 {"session_id": session_id},
                 {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}},
             )
+            asgn_id = session.get("assignment_id")
+            if asgn_id:
+                try:
+                    await db[ASSIGNMENTS_COLLECTION].update_one(
+                        {"assignment_id": asgn_id},
+                        {"$set": {"status": AssignmentStatus.COMPLETED.value, "completed_at": now, "updated_at": now}},
+                    )
+                except KeyError:
+                    pass
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Interview session has timed out. Duration limit exceeded.",
@@ -357,6 +419,7 @@ class InterviewSessionService:
             coding_spec=coding_spec,
             time_remaining_seconds=time_remaining,
             evaluator_mode=provider.get_mode().value,
+            expires_at=expires_at,
         )
 
     @staticmethod
@@ -399,6 +462,15 @@ class InterviewSessionService:
                 {"session_id": session_id},
                 {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}},
             )
+            asgn_id = session.get("assignment_id")
+            if asgn_id:
+                try:
+                    await db[ASSIGNMENTS_COLLECTION].update_one(
+                        {"assignment_id": asgn_id},
+                        {"$set": {"status": AssignmentStatus.COMPLETED.value, "completed_at": now, "updated_at": now}},
+                    )
+                except KeyError:
+                    pass
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Interview session duration has expired.",
@@ -479,6 +551,15 @@ class InterviewSessionService:
                 {"session_id": session_id},
                 {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}},
             )
+            asgn_id = session.get("assignment_id")
+            if asgn_id:
+                try:
+                    await db[ASSIGNMENTS_COLLECTION].update_one(
+                        {"assignment_id": asgn_id},
+                        {"$set": {"status": AssignmentStatus.COMPLETED.value, "completed_at": now, "updated_at": now}},
+                    )
+                except KeyError:
+                    pass
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot submit answer: Interview session duration has expired.",
@@ -1054,6 +1135,14 @@ class InterviewSessionService:
                 {"session_id": session["session_id"]},
                 {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}},
             )
+            if assignment_id:
+                try:
+                    await db[ASSIGNMENTS_COLLECTION].update_one(
+                        {"assignment_id": assignment_id},
+                        {"$set": {"status": AssignmentStatus.COMPLETED.value, "completed_at": now, "updated_at": now}},
+                    )
+                except KeyError:
+                    pass
             session["session_status"] = SessionStatus.TIMED_OUT.value
 
         interview = await db[INTERVIEWS_COLLECTION].find_one({"interview_id": assignment["interview_id"]})
@@ -1091,7 +1180,7 @@ class InterviewSessionService:
             "question_type": active_q.get("question_type", "conceptual"),
             "coding_spec": coding_spec,
             "active_question": safe_active_q,
-            "expires_at": session.get("expires_at").isoformat() if session.get("expires_at") else None,
+            "expires_at": expires_at.isoformat() if session.get("expires_at") else None,
             "time_remaining_seconds": time_remaining,
             "scorecard_id": session.get("scorecard_id") or session.get("final_scorecard_id"),
             "evaluator_mode": provider.get_mode().value,

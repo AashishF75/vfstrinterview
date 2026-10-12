@@ -441,6 +441,10 @@ async def test_get_session_by_assignment_retrieves_active_and_enforces_isolation
         "active_question": {"question_text": "What is ARP?", "topic": "ARP", "difficulty": "medium"},
         "expires_at": utc_now() + timedelta(minutes=25),
     }])
+    mock_interviews.find_one.return_value = {
+        "interview_id": "int-1",
+        "title": "Technical Interview",
+    }
 
     # 1. Successful lookup
     res = await InterviewSessionService.get_session_by_assignment(

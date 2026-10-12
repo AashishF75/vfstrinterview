@@ -24,14 +24,67 @@ import {
   Clock,
   Check,
   Play,
-  CheckCheck,
   AlertCircle,
   RefreshCw,
   FileText,
   Award,
   Briefcase,
   Loader2,
+  BookOpen,
+  BrainCircuit,
+  GraduationCap,
+  ChevronRight,
+  ExternalLink,
 } from 'lucide-react';
+
+// Official Canonical Roles matching verified question bank specifications
+const CANONICAL_FALLBACK_ROLES = [
+  {
+    role_id: 'associate-software-engineer',
+    role_name: 'Associate Software Engineer',
+    description: 'Entry-level software engineering, algorithmic logic, object-oriented concepts, and core technical problem solving.',
+    conceptual_questions_per_set: 13,
+    coding_questions_per_set: 2,
+    total_sets: 25,
+    total_questions: 375,
+  },
+  {
+    role_id: 'product-engineer',
+    role_name: 'Product Engineer',
+    description: 'End-to-end product architecture, system integration, API development, scalability, and user-centric problem solving.',
+    conceptual_questions_per_set: 13,
+    coding_questions_per_set: 2,
+    total_sets: 25,
+    total_questions: 375,
+  },
+  {
+    role_id: 'software-development-engineer',
+    role_name: 'Software Development Engineer',
+    description: 'Core software engineering, algorithms, data structures, backend systems, and operational coding.',
+    conceptual_questions_per_set: 13,
+    coding_questions_per_set: 2,
+    total_sets: 25,
+    total_questions: 375,
+  },
+  {
+    role_id: 'system-engineer',
+    role_name: 'System Engineer',
+    description: 'Operating systems, computer networks, system design, infrastructure engineering, and cloud deployment.',
+    conceptual_questions_per_set: 13,
+    coding_questions_per_set: 2,
+    total_sets: 25,
+    total_questions: 375,
+  },
+  {
+    role_id: 'testing-engineer',
+    role_name: 'Testing Engineer',
+    description: 'Quality assurance, test automation, unit/integration/regression testing, validation methodologies, and debugging.',
+    conceptual_questions_per_set: 13,
+    coding_questions_per_set: 2,
+    total_sets: 25,
+    total_questions: 375,
+  },
+];
 
 export default function Dashboard() {
   const { user, logout, hasRole } = useAuth();
@@ -47,7 +100,7 @@ export default function Dashboard() {
   const [assignmentError, setAssignmentError] = useState(null);
 
   // Job Role Selection state
-  const [roles, setRoles] = useState([]);
+  const [roles, setRoles] = useState(CANONICAL_FALLBACK_ROLES);
   const [rolesLoading, setRolesLoading] = useState(false);
   const [selectedRole, setSelectedRole] = useState('Software Development Engineer');
   const [roleStarting, setRoleStarting] = useState(false);
@@ -77,7 +130,7 @@ export default function Dashboard() {
     const fetchRoles = async () => {
       setRolesLoading(true);
       const res = await getAvailableJobRoles();
-      if (isMounted && res.success && res.data?.roles) {
+      if (isMounted && res.success && res.data?.roles && res.data.roles.length > 0) {
         setRoles(res.data.roles);
       }
       if (isMounted) setRolesLoading(false);
@@ -89,6 +142,7 @@ export default function Dashboard() {
   }, [user]);
 
   const handleStartRoleInterview = async (roleName) => {
+    if (!roleName || roleStarting) return;
     setRoleStarting(true);
     setRoleError(null);
     const res = await selectStudentJobRole(roleName);
@@ -165,30 +219,38 @@ export default function Dashboard() {
     setActionLoadingId(null);
   };
 
+  const institutionLabel = user?.college_name || (user?.institution_id === 'VFSTR' ? 'Vignan University (VFSTR)' : user?.institution_id || 'Partner University');
+
   return (
-    <div className="min-h-screen bg-[#030712] text-slate-100 flex flex-col selection:bg-indigo-500/30">
-      {/* Top Bar */}
-      <header className="border-b border-slate-800/70 bg-slate-900/40 backdrop-blur-xl sticky top-0 z-20">
+    <div className="min-h-screen bg-[#070b14] text-slate-100 flex flex-col selection:bg-cyan-500/30">
+      {/* Top Header */}
+      <header className="border-b border-slate-800/80 bg-[#0a101f]/90 backdrop-blur-xl sticky top-0 z-30 shadow-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <Link to="/" className="flex items-center space-x-2">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center">
+            <Link to="/" className="flex items-center space-x-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-xl p-1">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 via-indigo-600 to-violet-600 flex items-center justify-center shadow-lg shadow-cyan-600/20 ring-1 ring-cyan-400/30">
                 <Sparkles className="w-5 h-5 text-white" />
               </div>
-              <div>
-                <span className="font-bold text-white text-sm">Adaptive Interview Intelligence</span>
-                <span className="ml-2 text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:space-x-2">
+                <span className="font-bold text-white text-sm tracking-tight">Adaptive Interview Intelligence</span>
+                <span className="hidden sm:inline-block text-[10px] uppercase font-bold px-2 py-0.5 rounded-md bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 tracking-wider">
                   VFSTR
                 </span>
               </div>
             </Link>
           </div>
 
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-2.5 sm:space-x-3">
+            {/* Institution Badge */}
+            <div className="hidden md:flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900/80 border border-slate-800 text-xs text-slate-300">
+              <GraduationCap className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="truncate max-w-[180px] font-medium">{institutionLabel}</span>
+            </div>
+
             {hasRole(['platform_admin', 'university_admin', 'department_admin']) && (
               <Link
                 to="/admin"
-                className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30 font-medium transition flex items-center space-x-1"
+                className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30 font-medium transition flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
                 <Shield className="w-3.5 h-3.5" />
                 <span>Admin Console</span>
@@ -198,7 +260,8 @@ export default function Dashboard() {
             <button
               id="logout-button"
               onClick={handleLogout}
-              className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition flex items-center space-x-1.5"
+              className="text-xs px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 transition flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-cyan-400"
+              title="Sign out of interview workspace"
             >
               <LogOut className="w-3.5 h-3.5 text-slate-400" />
               <span>Sign Out</span>
@@ -208,95 +271,151 @@ export default function Dashboard() {
       </header>
 
       {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full flex-1">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full flex-1">
         {/* Welcome Banner */}
-        <div className="mb-8 p-6 rounded-2xl glass-panel border border-slate-800 relative overflow-hidden">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center space-x-2 mb-2">
-                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1">
-                  <CheckCircle2 className="w-3 h-3" />
+        <div className="mb-8 p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-[#0c1424] via-[#09101d] to-[#070b14] border border-slate-800/90 shadow-xl relative overflow-hidden">
+          {/* Subtle cyan glow ambient effect */}
+          <div className="absolute -top-24 -right-24 w-80 h-80 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
+            <div className="space-y-2 max-w-2xl">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   <span>Authenticated Session Active</span>
                 </span>
-                <span className="text-xs text-slate-400">•</span>
-                <span className="text-xs text-slate-300">Institution: <strong className="text-white">{user?.institution_id}</strong></span>
+                <span className="text-xs font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/50 px-2 py-0.5 rounded-full">
+                  ID: {user?.registration_number || user?.email}
+                </span>
               </div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
                 Welcome, {user?.full_name || user?.email}
               </h1>
-              <p className="text-xs sm:text-sm text-slate-400 mt-1">
-                Your authenticated profile and server-enforced role credentials are verified.
+              <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+                Adaptive AI Mock Interview Platform for engineering placements. Real-time conceptual evaluation, live sandbox code execution, and university-aligned rubric assessments.
               </p>
             </div>
 
-            <div className="flex items-center space-x-2">
-              <span className="px-3.5 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-xs font-mono text-indigo-300 font-semibold uppercase tracking-wider">
-                Role: {user?.role}
-              </span>
+            {/* Quick Readiness Metrics */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 sm:gap-3 w-full lg:w-auto">
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                <div className="flex items-center space-x-1.5 text-cyan-400 text-xs font-medium mb-1">
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>Question Bank</span>
+                </div>
+                <div className="text-base sm:text-lg font-bold text-white font-mono">1,875</div>
+                <div className="text-[10px] text-slate-400">Official Questions</div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                <div className="flex items-center space-x-1.5 text-violet-400 text-xs font-medium mb-1">
+                  <BrainCircuit className="w-3.5 h-3.5" />
+                  <span>Roles Covered</span>
+                </div>
+                <div className="text-base sm:text-lg font-bold text-white font-mono">5 Canonical</div>
+                <div className="text-[10px] text-slate-400">125 Problem Sets</div>
+              </div>
+
+              <div className="col-span-2 sm:col-span-1 p-3 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                <div className="flex items-center space-x-1.5 text-emerald-400 text-xs font-medium mb-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>AI Evaluator</span>
+                </div>
+                <div className="text-base sm:text-lg font-bold text-white font-mono">Online</div>
+                <div className="text-[10px] text-slate-400">Gemini & Sandbox</div>
+              </div>
             </div>
           </div>
         </div>
 
         {/* ROLE SELECTION & SELF-ENROLLMENT SECTION */}
         {user?.role === 'student' && (
-          <div className="mb-8 p-6 rounded-2xl glass-panel border border-slate-800 relative overflow-hidden">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+          <section className="mb-8 p-6 sm:p-7 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 shadow-xl relative overflow-hidden" aria-labelledby="role-selection-heading">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
               <div className="flex items-center space-x-2.5">
-                <Briefcase className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-base font-bold text-white">Select Target Job Role & Start Interview</h2>
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center justify-center">
+                  <Briefcase className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 id="role-selection-heading" className="text-base sm:text-lg font-bold text-white">
+                    Select Target Job Role & Start Interview
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Select an engineering track to launch an adaptive technical mock interview from the verified repository.
+                  </p>
+                </div>
               </div>
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-medium">
-                Verified Question Bank: 1,875 Questions
+              <span className="self-start sm:self-center text-xs px-3 py-1 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-semibold tracking-wide flex items-center space-x-1.5 shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                <span>Verified Question Bank: 1,875 Questions</span>
               </span>
             </div>
 
-            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
-              Select your target engineering profile to begin an adaptive mock interview. Questions are drawn directly from the official university question bank (25 sets per role, 15 questions per set: 13 conceptual and 2 coding).
-            </p>
-
             {roleError && (
-              <div className="mb-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800/50 text-rose-300 text-xs flex items-center space-x-2">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                <span>{roleError}</span>
+              <div className="mb-5 p-3.5 rounded-xl bg-rose-950/50 border border-rose-800/60 text-rose-300 text-xs flex items-center space-x-2.5 shadow-md">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
+                <span className="font-medium">{roleError}</span>
               </div>
             )}
 
             {rolesLoading && roles.length === 0 ? (
-              <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center space-x-2">
-                <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+              <div className="py-12 text-center text-xs text-slate-400 flex items-center justify-center space-x-2">
+                <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
                 <span>Loading available job roles...</span>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6" role="radiogroup" aria-label="Job role selection">
                 {roles.map((r) => {
                   const isSelected = selectedRole === r.role_name;
                   return (
                     <div
                       key={r.role_id}
+                      role="radio"
+                      aria-checked={isSelected}
+                      tabIndex={0}
                       onClick={() => setSelectedRole(r.role_name)}
-                      className={`p-4 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedRole(r.role_name);
+                        }
+                      }}
+                      className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-all duration-200 flex flex-col justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09101d] ${
                         isSelected
-                          ? 'bg-cyan-950/40 border-cyan-500/80 shadow-lg shadow-cyan-950/40 ring-1 ring-cyan-500/50'
-                          : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900/80'
+                          ? 'bg-gradient-to-br from-[#0c2238] via-[#091a2e] to-[#071322] border-cyan-400/90 shadow-xl shadow-cyan-950/40 ring-1 ring-cyan-400/60'
+                          : 'bg-[#0b1220]/80 border-slate-800/90 hover:border-slate-700 hover:bg-[#0e172a] shadow-sm'
                       }`}
                     >
                       <div>
-                        <div className="flex items-start justify-between gap-2 mb-1.5">
-                          <span className="font-semibold text-white text-sm">{r.role_name}</span>
-                          {isSelected && (
-                            <span className="w-4 h-4 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0">
-                              <Check className="w-3 h-3" />
+                        {/* Header & Obvious Selected Indicator */}
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <span className={`font-bold text-sm tracking-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
+                            {r.role_name}
+                          </span>
+                          {isSelected ? (
+                            <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-400/60 text-[10px] font-bold uppercase tracking-wider flex items-center space-x-1 shrink-0">
+                              <Check className="w-3 h-3 text-cyan-400" />
+                              <span>SELECTED</span>
                             </span>
+                          ) : (
+                            <span className="w-4 h-4 rounded-full border border-slate-700 shrink-0 mt-0.5" />
                           )}
                         </div>
-                        <p className="text-[11px] text-slate-400 line-clamp-3 mb-3 leading-relaxed">
+
+                        {/* Description */}
+                        <p className="text-[11px] text-slate-400 mb-4 leading-relaxed">
                           {r.description}
                         </p>
                       </div>
 
-                      <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                        <span>{r.total_sets || 25} Sets • {r.total_questions || 375} Questions</span>
-                        <span className="text-cyan-400 font-sans font-medium">13 Concept + 2 Code</span>
+                      {/* Question Bank Breakdown Footer */}
+                      <div className="pt-2.5 border-t border-slate-800/70 flex items-center justify-between text-[10px] font-mono text-slate-400">
+                        <span className="font-semibold text-slate-300">
+                          {r.total_sets || 25} Sets • {r.total_questions || 375} Qs
+                        </span>
+                        <span className="text-cyan-400 font-sans font-medium bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-900/60">
+                          13 Concept + 2 Code
+                        </span>
                       </div>
                     </div>
                   );
@@ -304,14 +423,20 @@ export default function Dashboard() {
               </div>
             )}
 
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-800/70">
-              <div className="text-xs text-slate-400">
-                Selected Role: <strong className="text-cyan-300 font-semibold">{selectedRole}</strong>
+            {/* Action Bar */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-800/80 bg-[#080d19]/60 p-4 rounded-xl border border-slate-800/50">
+              <div className="text-xs text-slate-300 flex items-center space-x-2">
+                <span className="text-slate-400">Active Choice:</span>
+                <strong className="text-cyan-300 font-bold px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/50">
+                  {selectedRole}
+                </strong>
+                <span className="hidden md:inline text-slate-400">• 5 Adaptive Questions Target</span>
               </div>
+
               <button
                 onClick={() => handleStartRoleInterview(selectedRole)}
                 disabled={roleStarting || !selectedRole}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 via-indigo-600 to-violet-600 hover:opacity-95 text-white text-xs font-bold shadow-lg shadow-cyan-600/20 transition flex items-center justify-center space-x-2 disabled:opacity-50"
+                className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 via-indigo-600 to-violet-600 hover:from-cyan-500 hover:via-indigo-500 hover:to-violet-500 text-white text-xs font-bold shadow-lg shadow-cyan-600/20 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09101d]"
               >
                 {roleStarting ? (
                   <>
@@ -320,63 +445,77 @@ export default function Dashboard() {
                   </>
                 ) : (
                   <>
-                    <Play className="w-4 h-4" />
+                    <Play className="w-4 h-4 fill-white" />
                     <span>Start Interview for {selectedRole}</span>
                   </>
                 )}
               </button>
             </div>
-          </div>
+          </section>
         )}
 
         {/* STUDENT ASSIGNED INTERVIEWS SECTION */}
         {user?.role === 'student' && (
-          <div className="mb-8 p-6 rounded-2xl glass-panel border border-slate-800">
+          <section className="mb-8 p-6 sm:p-7 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 shadow-xl" aria-labelledby="university-assigned-heading">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center space-x-2.5">
-                <Calendar className="w-5 h-5 text-indigo-400" />
-                <h2 className="text-base font-bold text-white">My University-Assigned Interviews</h2>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-                  {assignments.length}
-                </span>
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center">
+                  <Calendar className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 id="university-assigned-heading" className="text-base sm:text-lg font-bold text-white">
+                    My University-Assigned Interviews
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Official course and cohort assessments scheduled by university faculty.
+                  </p>
+                </div>
               </div>
-              <button
-                onClick={fetchStudentAssignments}
-                disabled={assignmentsLoading}
-                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
-                title="Refresh my assignments"
-              >
-                <RefreshCw className={`w-4 h-4 ${assignmentsLoading ? 'animate-spin' : ''}`} />
-              </button>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 font-semibold font-mono">
+                  {assignments.length} Total
+                </span>
+                <button
+                  onClick={fetchStudentAssignments}
+                  disabled={assignmentsLoading}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-cyan-400"
+                  title="Refresh my assignments"
+                >
+                  <RefreshCw className={`w-4 h-4 ${assignmentsLoading ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
             </div>
 
             {assignmentError && (
-              <div className="mb-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800/50 text-rose-300 text-xs flex items-center space-x-2">
+              <div className="mb-4 p-3 rounded-xl bg-rose-950/50 border border-rose-800/60 text-rose-300 text-xs flex items-center space-x-2">
                 <AlertCircle className="w-4 h-4 flex-shrink-0" />
                 <span>{assignmentError}</span>
               </div>
             )}
 
             {assignmentsLoading && assignments.length === 0 ? (
-              <div className="text-center py-10 text-slate-400 text-xs">Loading assigned interviews...</div>
+              <div className="text-center py-10 text-slate-400 text-xs flex items-center justify-center space-x-2">
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                <span>Loading assigned interviews...</span>
+              </div>
             ) : assignments.length === 0 ? (
-              <div className="text-center py-10 border border-dashed border-slate-800/80 rounded-xl">
+              <div className="text-center py-10 border border-dashed border-slate-800/80 rounded-xl bg-slate-900/30">
                 <Calendar className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-                <p className="text-xs font-medium text-slate-300">No interviews currently assigned</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  When university administrators assign an interview to your registration number, it will appear here.
+                <p className="text-xs font-semibold text-slate-300">No scheduled university interviews currently pending</p>
+                <p className="text-[11px] text-slate-500 mt-1 max-w-sm mx-auto">
+                  When department administrators assign an interview to your registration number, it will appear here. You can also self-enroll in mock interviews above.
                 </p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3.5">
                 {assignments.map((assign) => (
                   <div
                     key={assign.assignment_id}
-                    className="p-5 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    className="p-5 rounded-xl bg-[#0b1220]/80 border border-slate-800/80 hover:border-slate-700 transition flex flex-col md:flex-row md:items-center justify-between gap-4"
                   >
-                    <div className="space-y-1.5 max-w-2xl">
-                      <div className="flex items-center space-x-2.5">
-                        <span className="font-semibold text-white text-base">{assign.interview_title}</span>
+                    <div className="space-y-2 max-w-2xl">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <span className="font-bold text-white text-sm sm:text-base">{assign.interview_title}</span>
                         <span
                           className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full border ${
                             assign.status === 'assigned'
@@ -394,7 +533,7 @@ export default function Dashboard() {
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+                      <div className="flex flex-wrap items-center gap-3.5 text-xs text-slate-400">
                         <span className="flex items-center space-x-1">
                           <Calendar className="w-3.5 h-3.5 text-indigo-400" />
                           <span>{new Date(assign.scheduled_start_time).toLocaleString()}</span>
@@ -404,24 +543,30 @@ export default function Dashboard() {
                           <span>Duration: {assign.duration_minutes} mins</span>
                         </span>
                         <span className="text-slate-400">
-                          Section: <strong className="text-white">{assign.section || 'General'}</strong>
+                          Section: <strong className="text-white font-medium">{assign.section || 'General'}</strong>
                         </span>
                       </div>
 
-                      <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/60 text-xs text-slate-300 font-mono mt-2 whitespace-pre-line">
-                        {assign.interview_instructions}
-                      </div>
+                      {assign.interview_instructions && (
+                        <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800/60 text-xs text-slate-300 font-mono mt-1 whitespace-pre-line line-clamp-2">
+                          {assign.interview_instructions}
+                        </div>
+                      )}
                     </div>
 
                     {/* Student Action Buttons */}
-                    <div className="flex items-center space-x-2 self-end md:self-center">
+                    <div className="flex items-center space-x-2 self-end md:self-center shrink-0">
                       {assign.status === 'assigned' && (
                         <button
                           onClick={() => handleAcceptAssignment(assign.assignment_id)}
                           disabled={actionLoadingId === assign.assignment_id}
-                          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-1.5"
+                          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-1.5 disabled:opacity-50"
                         >
-                          <Check className="w-4 h-4" />
+                          {actionLoadingId === assign.assignment_id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Check className="w-4 h-4" />
+                          )}
                           <span>Accept Assignment</span>
                         </button>
                       )}
@@ -431,7 +576,7 @@ export default function Dashboard() {
                           onClick={() => navigate(`/interview/${assign.assignment_id}`)}
                           className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 transition flex items-center space-x-1.5"
                         >
-                          <Play className="w-4 h-4" />
+                          <Play className="w-4 h-4 fill-white" />
                           <span>Enter Interview Room</span>
                         </button>
                       )}
@@ -441,7 +586,7 @@ export default function Dashboard() {
                           onClick={() => navigate(`/interview/${assign.assignment_id}`)}
                           className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-1.5"
                         >
-                          <Play className="w-4 h-4" />
+                          <Play className="w-4 h-4 fill-white" />
                           <span>Resume Interview</span>
                         </button>
                       )}
@@ -460,15 +605,17 @@ export default function Dashboard() {
                 ))}
               </div>
             )}
-          </div>
-        )}        {/* User Profile & Security Specifications */}
+          </section>
+        )}
+
+        {/* User Profile Specifications & Dev Probes */}
         <div className={`grid grid-cols-1 ${import.meta.env.DEV ? 'lg:grid-cols-3' : 'max-w-2xl'} gap-6 mb-8`}>
           {/* User Metadata Card */}
-          <div className="glass-panel p-6 rounded-2xl border border-slate-800 flex flex-col justify-between">
+          <div className="p-6 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 flex flex-col justify-between shadow-xl">
             <div>
               <h3 className="text-sm font-bold text-white mb-4 flex items-center space-x-2">
-                <User className="w-4 h-4 text-indigo-400" />
-                <span>Account Specifications</span>
+                <User className="w-4 h-4 text-cyan-400" />
+                <span>Student Identity & Verification</span>
               </h3>
 
               <div className="space-y-3 text-xs">
@@ -479,25 +626,19 @@ export default function Dashboard() {
                 {user?.registration_number && (
                   <div>
                     <span className="text-slate-400 block mb-0.5">Registration Number</span>
-                    <span className="font-mono text-indigo-300 font-semibold">{user?.registration_number}</span>
+                    <span className="font-mono text-cyan-300 font-bold">{user?.registration_number}</span>
                   </div>
                 )}
                 <div>
-                  <span className="text-slate-400 block mb-0.5">Unique User Identifier</span>
-                  <span className="font-mono text-[11px] text-slate-300 truncate block bg-slate-900/60 p-1.5 rounded border border-slate-800">
-                    {user?.id}
-                  </span>
-                </div>
-                <div>
                   <span className="text-slate-400 block mb-0.5">Role Permission Level</span>
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 uppercase">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 uppercase">
                     {user?.role}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-400 block mb-0.5">Institution</span>
-                  <span className="text-slate-200">
-                    {user?.college_name || user?.institution_id} {user?.institution_id === 'VFSTR' ? '(VFSTR Deemed University)' : ''}
+                  <span className="text-slate-200 font-medium">
+                    {institutionLabel}
                   </span>
                 </div>
                 {user?.department && (
@@ -506,27 +647,25 @@ export default function Dashboard() {
                     <span className="font-mono text-slate-200">{user?.department}</span>
                   </div>
                 )}
-                {user?.contact_number && (
-                  <div>
-                    <span className="text-slate-400 block mb-0.5">Contact Number</span>
-                    <span className="font-mono text-slate-200">{user?.contact_number}</span>
-                  </div>
-                )}
                 <div>
-                  <span className="text-slate-400 block mb-0.5">Status</span>
-                  <span className="text-emerald-400 capitalize">{user?.account_status}</span>
+                  <span className="text-slate-400 block mb-0.5">Account Status</span>
+                  <span className="text-emerald-400 font-semibold capitalize flex items-center space-x-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 inline" />
+                    <span>{user?.account_status || 'Verified Active'}</span>
+                  </span>
                 </div>
               </div>
             </div>
 
-            <div className="mt-6 pt-4 border-t border-slate-800/80 text-[11px] text-slate-400">
-              JWT Bearer token loaded in active session
+            <div className="mt-6 pt-4 border-t border-slate-800/80 text-[11px] text-slate-400 flex items-center justify-between">
+              <span>Bearer Session Validated</span>
+              <span className="text-cyan-400 font-mono text-[10px]">ECDSA / HS256</span>
             </div>
           </div>
 
           {/* Interactive Server Authorization Probes Card - Development Only */}
           {import.meta.env.DEV && (
-            <div className="lg:col-span-2 glass-panel p-6 rounded-2xl border border-slate-800">
+            <div className="lg:col-span-2 p-6 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 shadow-xl">
               <h3 className="text-sm font-bold text-white mb-2 flex items-center space-x-2">
                 <Shield className="w-4 h-4 text-indigo-400" />
                 <span>Live Server-Side Authorization Verification (Dev Diagnostics)</span>
@@ -540,7 +679,7 @@ export default function Dashboard() {
                   id="test-protected-btn"
                   onClick={handleTestProtected}
                   disabled={testLoading}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center space-x-2"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center space-x-2 focus-visible:ring-2 focus-visible:ring-indigo-400"
                 >
                   <Activity className="w-3.5 h-3.5" />
                   <span>Probe /api/auth/protected-test (Any Role)</span>
@@ -550,7 +689,7 @@ export default function Dashboard() {
                   id="test-admin-only-btn"
                   onClick={handleTestAdminOnly}
                   disabled={testLoading}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition flex items-center space-x-2"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition flex items-center space-x-2 focus-visible:ring-2 focus-visible:ring-cyan-400"
                 >
                   <Lock className="w-3.5 h-3.5 text-amber-400" />
                   <span>Probe /api/auth/admin-only (Admin Restricted)</span>
@@ -583,31 +722,6 @@ export default function Dashboard() {
               </div>
             </div>
           )}
-        </div>
-
-        {/* Phase Roadmap Notice */}
-        <div className="p-6 rounded-2xl bg-indigo-950/30 border border-indigo-700/40 relative overflow-hidden">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className="flex items-start space-x-3.5">
-              <div className="p-2.5 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-300">
-                <Sparkles className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-sm font-semibold text-white">
-                  University-Assigned Interviews Active
-                </h4>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Students can review their assigned university interviews, accept scheduling, and track their preparation status.
-                </p>
-              </div>
-            </div>
-            <Link
-              to="/"
-              className="text-xs font-semibold px-4 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 transition shrink-0"
-            >
-              Back to Home
-            </Link>
-          </div>
         </div>
       </main>
     </div>

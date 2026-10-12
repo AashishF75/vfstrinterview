@@ -1,6 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 import uuid
+import pymongo
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
@@ -12,6 +13,8 @@ from app.models.interview import (
     StudentAssignmentResponse,
     AssignmentStatus,
 )
+from app.models.interview_session import SessionStatus
+from app.services.interview_session_service import _ensure_utc
 from app.services.interview_service import InterviewService
 
 router = APIRouter()
@@ -251,6 +254,45 @@ async def select_job_role_and_create_assignment(
             AssignmentStatus.IN_PROGRESS.value,
         ]}
     })
+
+    if existing_assignment:
+        # Check whether this assignment has a session that is already timed out or completed
+        cursor = db["interview_sessions"].find({"assignment_id": existing_assignment["assignment_id"]})
+        if hasattr(cursor, "sort") and callable(cursor.sort):
+            cursor = cursor.sort("created_at", pymongo.DESCENDING)
+        if hasattr(cursor, "to_list"):
+            res = cursor.to_list(length=1)
+            latest_sessions = await res if hasattr(res, "__await__") else res
+        elif hasattr(cursor, "__await__"):
+            latest_sessions = await cursor
+        else:
+            latest_sessions = cursor
+
+        latest_sess = latest_sessions[0] if latest_sessions and isinstance(latest_sessions, list) else None
+        if latest_sess:
+            sess_status = latest_sess.get("session_status")
+            sess_exp = _ensure_utc(latest_sess.get("expires_at", now))
+            is_expired = (
+                (sess_status == SessionStatus.IN_PROGRESS.value and now > sess_exp)
+                or sess_status in (
+                    SessionStatus.TIMED_OUT.value,
+                    SessionStatus.COMPLETED.value,
+                    SessionStatus.ABANDONED.value,
+                )
+            )
+            if is_expired:
+                # The active attempt for this assignment has expired or completed.
+                # Finalize session and assignment so they do not block a fresh interview attempt.
+                if sess_status == SessionStatus.IN_PROGRESS.value:
+                    await db["interview_sessions"].update_one(
+                        {"session_id": latest_sess["session_id"]},
+                        {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}}
+                    )
+                await db["student_interview_assignments"].update_one(
+                    {"assignment_id": existing_assignment["assignment_id"]},
+                    {"$set": {"status": AssignmentStatus.COMPLETED.value, "completed_at": now, "updated_at": now}}
+                )
+                existing_assignment = None  # Proceed to create a fresh assignment for this role!
 
     if existing_assignment:
         parent_int = await db["university_interviews"].find_one(
