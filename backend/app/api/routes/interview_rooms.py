@@ -1,7 +1,8 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.core.config import settings
 from app.core.database import get_interview_database
 from app.api.deps import require_roles, get_current_active_user
 from app.models.user import UserInDB, UserRole
@@ -12,6 +13,11 @@ from app.models.interview_session import (
     SubmitAnswerResponse,
     ScorecardResponse,
 )
+from app.models.voice import (
+    VoiceSpeakRequest,
+    VoiceTranscribeResponse,
+    VoiceStatusResponse,
+)
 from app.models.proctoring import (
     RecordProctoringEventsRequest,
     RecordProctoringEventsResponse,
@@ -19,6 +25,7 @@ from app.models.proctoring import (
 )
 from app.services.interview_session_service import InterviewSessionService
 from app.services.proctoring_service import ProctoringService
+from app.services.deepgram_service import DeepgramService
 
 logger = logging.getLogger(__name__)
 
@@ -257,4 +264,136 @@ async def get_session_proctoring_timeline(
         db=db,
         session_id=session_id,
         current_user=current_user,
+    )
+
+
+async def _verify_active_student_session(
+    db: AsyncIOMotorDatabase,
+    session_id: str,
+    student_user: UserInDB,
+) -> dict:
+    """Verifies that the session exists, belongs to the calling student, and is in progress."""
+    clean_reg = (student_user.registration_number or "").strip().upper()
+    if not clean_reg:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Student account is not linked to a verified university registration number",
+        )
+    col = db["interview_sessions"]
+    res = col.find_one({"session_id": session_id})
+    session = await res if hasattr(res, "__await__") else res
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session '{session_id}' not found",
+        )
+    if session.get("student_registration_number") != clean_reg:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You are not authorized to access another student's session",
+        )
+    if session.get("session_status") != "in_progress":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Session is already {session.get('session_status')}. Voice actions are only permitted for active interview sessions.",
+        )
+    return session
+
+
+@router.get("/sessions/{session_id}/voice/status", response_model=VoiceStatusResponse)
+async def get_voice_status(
+    session_id: str,
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Checks if Deepgram voice capabilities (STT & TTS) are configured and available.
+    Verifies session ownership before returning provider configuration state.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    await _verify_active_student_session(db, session_id, current_student)
+    return VoiceStatusResponse(
+        configured=DeepgramService.is_configured(),
+        stt_model=settings.DEEPGRAM_STT_MODEL,
+        tts_model=settings.DEEPGRAM_TTS_MODEL,
+    )
+
+
+@router.post("/sessions/{session_id}/voice/transcribe", response_model=VoiceTranscribeResponse)
+async def transcribe_interview_audio(
+    session_id: str,
+    file: UploadFile = File(...),
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Transcribes candidate spoken answer using backend Deepgram STT service.
+    Validates student ownership, file size limits (10 MB), and audio format.
+    Never stores recordings persistently and never logs audio bytes or transcripts.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    await _verify_active_student_session(db, session_id, current_student)
+
+    # Read uploaded audio into memory with size validation
+    audio_bytes = await file.read()
+    if not audio_bytes or len(audio_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio recording payload is empty.",
+        )
+    if len(audio_bytes) > settings.DEEPGRAM_MAX_AUDIO_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Audio payload exceeds maximum permitted size of {settings.DEEPGRAM_MAX_AUDIO_SIZE_BYTES // (1024 * 1024)} MB.",
+        )
+
+    content_type = file.content_type or "audio/webm"
+    transcript, confidence, duration = await DeepgramService.transcribe_audio(
+        audio_bytes=audio_bytes,
+        content_type=content_type,
+    )
+
+    return VoiceTranscribeResponse(
+        success=True,
+        transcript=transcript,
+        confidence=confidence,
+        duration_seconds=duration,
+    )
+
+
+@router.post("/sessions/{session_id}/voice/speak")
+async def synthesize_interview_speech(
+    session_id: str,
+    data: VoiceSpeakRequest,
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Synthesizes interview question text into spoken audio using Deepgram TTS service.
+    Returns binary audio/mpeg stream directly without disk persistence.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    await _verify_active_student_session(db, session_id, current_student)
+
+    audio_bytes = await DeepgramService.synthesize_speech(data.text)
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Content-Disposition": "inline; filename=speech.mp3",
+        },
     )

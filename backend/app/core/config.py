@@ -170,6 +170,14 @@ class Settings(BaseSettings):
     INTERVIEW_TOTAL_QUESTIONS_DEFAULT: int = 5
     ALLOW_MOCK_EVALUATOR_FALLBACK: Optional[bool] = None
 
+    # Deepgram Voice Service Configuration (Phase 3 Voice STT & TTS)
+    DEEPGRAM_API_KEY: Optional[str] = None
+    DEEPGRAM_API_BASE_URL: str = "https://api.deepgram.com"
+    DEEPGRAM_STT_MODEL: str = "nova-2"
+    DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
+    DEEPGRAM_MAX_AUDIO_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB limit
+    DEEPGRAM_REQUEST_TIMEOUT_SECONDS: float = 15.0
+
     # Sandboxed Code Execution Service Configuration (Judge0 Compatible API)
     JUDGE0_API_URL: Optional[str] = None  # e.g. "https://judge0-ce.p.rapidapi.com" or "http://localhost:2358"
     JUDGE0_API_KEY: Optional[str] = None  # RapidAPI Key or X-Auth-Token
@@ -275,6 +283,9 @@ class Settings(BaseSettings):
             "has_smtp_credentials": bool(self.SMTP_USERNAME and self.SMTP_PASSWORD),
             "has_judge0_configured": bool(self.JUDGE0_API_URL and self.JUDGE0_API_URL.strip()),
             "judge0_api_url": self.JUDGE0_API_URL if self.JUDGE0_API_URL else None,
+            "has_deepgram_key": bool(self.DEEPGRAM_API_KEY and self.DEEPGRAM_API_KEY.strip()),
+            "deepgram_stt_model": self.DEEPGRAM_STT_MODEL,
+            "deepgram_tts_model": self.DEEPGRAM_TTS_MODEL,
         }
 
     @model_validator(mode="before")

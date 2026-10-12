@@ -661,6 +661,81 @@ export const updateSessionProctoringReview = async (sessionId, reviewStatus, rev
   }
 };
 
+// ==============================================================================
+// Deepgram Voice Service Integration (Phase 3 Voice STT & TTS)
+// ==============================================================================
+
+export const getVoiceStatus = async (sessionId) => {
+  try {
+    const response = await apiClient.get(`/api/interview-rooms/sessions/${sessionId}/voice/status`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to check voice service status',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const transcribeInterviewAudio = async (sessionId, audioBlob) => {
+  try {
+    const formData = new FormData();
+    const filename = audioBlob.type?.includes('wav') ? 'recording.wav' : 'recording.webm';
+    formData.append('file', audioBlob, filename);
+
+    const response = await apiClient.post(
+      `/api/interview-rooms/sessions/${sessionId}/voice/transcribe`,
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 20000,
+      }
+    );
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Speech transcription failed',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const synthesizeInterviewSpeech = async (sessionId, text) => {
+  try {
+    const response = await apiClient.post(
+      `/api/interview-rooms/sessions/${sessionId}/voice/speak`,
+      { text },
+      {
+        responseType: 'blob',
+        timeout: 20000,
+      }
+    );
+    return { success: true, data: response.data };
+  } catch (error) {
+    let errorDetail = error.message || 'Speech synthesis failed';
+    if (error.response?.data instanceof Blob) {
+      try {
+        const textData = await error.response.data.text();
+        const json = JSON.parse(textData);
+        if (json?.detail) errorDetail = json.detail;
+      } catch {
+        // use default errorDetail
+      }
+    } else if (error.response?.data?.detail) {
+      errorDetail = error.response.data.detail;
+    }
+    return {
+      success: false,
+      error: errorDetail,
+      status: error.response?.status,
+    };
+  }
+};
+
 export default apiClient;
 
 

@@ -9,6 +9,9 @@ import {
   submitInterviewCode,
   getSessionScorecard,
   recordProctoringEvents,
+  getVoiceStatus,
+  transcribeInterviewAudio,
+  synthesizeInterviewSpeech,
 } from '../api/client';
 import ProctoringPreflightModal from '../components/ProctoringPreflightModal';
 import ProctoringCameraWidget from '../components/ProctoringCameraWidget';
@@ -95,17 +98,30 @@ export default function InterviewRoom() {
   const timerRef = useRef(null);
 
   // --------------------------------------------------------------------------
-  // Web Speech Synthesis (AI Interviewer Voice & Spoken Questions)
+  // --------------------------------------------------------------------------
+  // Deepgram Voice & Web Speech Synthesis (AI Interviewer Voice & Spoken Questions)
   // --------------------------------------------------------------------------
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [speakingSource, setSpeakingSource] = useState(null); // 'deepgram' | 'browser' | null
   const [isMuted, setIsMuted] = useState(false);
   const [speechBlocked, setSpeechBlocked] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState(null);
   const lastSpokenQuestionIndexRef = useRef(null);
   const [, setVoicesLoaded] = useState(false);
+  const deepgramAudioRef = useRef(null);
+  const audioPlaybackUrlRef = useRef(null);
 
   // --------------------------------------------------------------------------
-  // Web Speech Recognition (Student Voice-to-Text Input)
+  // Deepgram Audio Recording & Web Speech Recognition (Student Voice Input)
   // --------------------------------------------------------------------------
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [isTranscribingAudio, setIsTranscribingAudio] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recordingStartTimeRef = useRef(null);
+
+  // Browser Web Speech Recognition fallback state
   const [isListening, setIsListening] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState('');
   const [speechError, setSpeechError] = useState(null);
@@ -278,15 +294,13 @@ export default function InterviewRoom() {
     );
   }, []);
 
-  // Speak authoritative question text in English
-  const speakQuestion = useCallback((text) => {
+  // Browser SpeechSynthesis fallback
+  const speakQuestionBrowser = useCallback((text) => {
     if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-
-    // Cancel any active speech first
     window.speechSynthesis.cancel();
-
     if (isMuted) {
       setIsSpeaking(false);
+      setSpeakingSource(null);
       return;
     }
 
@@ -303,15 +317,18 @@ export default function InterviewRoom() {
 
     utterance.onstart = () => {
       setIsSpeaking(true);
+      setSpeakingSource('browser');
       setSpeechBlocked(false);
     };
 
     utterance.onend = () => {
       setIsSpeaking(false);
+      setSpeakingSource(null);
     };
 
     utterance.onerror = (e) => {
       setIsSpeaking(false);
+      setSpeakingSource(null);
       if (e.error === 'not-allowed') {
         setSpeechBlocked(true);
       }
@@ -322,8 +339,72 @@ export default function InterviewRoom() {
     } catch {
       setSpeechBlocked(true);
       setIsSpeaking(false);
+      setSpeakingSource(null);
     }
   }, [isMuted, getEnglishVoice]);
+
+  // Master question speaker: Prefers Deepgram TTS (Aura), seamlessly falls back to browser speechSynthesis
+  const speakQuestion = useCallback(async (text) => {
+    if (!text) return;
+
+    // Stop any ongoing audio first
+    handleStopSpeech();
+
+    if (isMuted) {
+      setIsSpeaking(false);
+      setSpeakingSource(null);
+      return;
+    }
+
+    // Try Deepgram TTS if sessionId is available
+    if (sessionId) {
+      try {
+        const res = await synthesizeInterviewSpeech(sessionId, text);
+        if (res.success && res.data instanceof Blob && res.data.size > 0) {
+          const blobUrl = URL.createObjectURL(res.data);
+          audioPlaybackUrlRef.current = blobUrl;
+          const audio = new Audio(blobUrl);
+
+          audio.onplay = () => {
+            setIsSpeaking(true);
+            setSpeakingSource('deepgram');
+            setSpeechBlocked(false);
+          };
+
+          audio.onended = () => {
+            setIsSpeaking(false);
+            setSpeakingSource(null);
+            if (audioPlaybackUrlRef.current) {
+              URL.revokeObjectURL(audioPlaybackUrlRef.current);
+              audioPlaybackUrlRef.current = null;
+            }
+            deepgramAudioRef.current = null;
+          };
+
+          audio.onerror = () => {
+            setIsSpeaking(false);
+            setSpeakingSource(null);
+            if (audioPlaybackUrlRef.current) {
+              URL.revokeObjectURL(audioPlaybackUrlRef.current);
+              audioPlaybackUrlRef.current = null;
+            }
+            deepgramAudioRef.current = null;
+            // Fallback to browser TTS on audio error
+            speakQuestionBrowser(text);
+          };
+
+          deepgramAudioRef.current = audio;
+          await audio.play();
+          return;
+        }
+      } catch {
+        // Deepgram playback failed or rejected by browser autoplay policy -> fallback to browser
+      }
+    }
+
+    // Fallback to browser speech synthesis
+    speakQuestionBrowser(text);
+  }, [sessionId, isMuted, speakQuestionBrowser]);
 
   // Auto-speak newly active question once (guarded against re-renders via ref)
   useEffect(() => {
@@ -345,26 +426,165 @@ export default function InterviewRoom() {
   };
 
   const handleStopSpeech = () => {
+    if (deepgramAudioRef.current) {
+      try {
+        deepgramAudioRef.current.pause();
+        deepgramAudioRef.current.currentTime = 0;
+      } catch {}
+      deepgramAudioRef.current = null;
+    }
+    if (audioPlaybackUrlRef.current) {
+      try {
+        URL.revokeObjectURL(audioPlaybackUrlRef.current);
+      } catch {}
+      audioPlaybackUrlRef.current = null;
+    }
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
     }
     setIsSpeaking(false);
+    setSpeakingSource(null);
   };
 
   const handleToggleMute = () => {
     setIsMuted((prev) => {
       const next = !prev;
       if (next) {
-        if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-          window.speechSynthesis.cancel();
-        }
-        setIsSpeaking(false);
+        handleStopSpeech();
       }
       return next;
     });
   };
 
-  // Speech recognition handlers
+  // Helper to safely stop all media tracks
+  const stopMediaStreamTracks = () => {
+    if (mediaStreamRef.current) {
+      try {
+        mediaStreamRef.current.getTracks().forEach((track) => {
+          track.stop();
+        });
+      } catch {}
+      mediaStreamRef.current = null;
+    }
+  };
+
+  // Deepgram Audio Recording handlers
+  const startDeepgramRecording = async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setSpeechError('Microphone recording is not supported in this browser. Please use browser speech recognition or type manually.');
+      return;
+    }
+
+    setSpeechError(null);
+    stopVoiceRecognition(); // Stop browser speech recognition if active
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        } else if (MediaRecorder.isTypeSupported('audio/wav')) {
+          mimeType = 'audio/wav';
+        }
+      }
+
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstart = () => {
+        setIsRecordingAudio(true);
+        recordingStartTimeRef.current = Date.now();
+      };
+
+      recorder.onerror = () => {
+        stopMediaStreamTracks();
+        setIsRecordingAudio(false);
+        setSpeechError('Microphone recording error occurred. Manual typing remains active.');
+      };
+
+      recorder.onstop = async () => {
+        stopMediaStreamTracks();
+        setIsRecordingAudio(false);
+
+        const chunks = [...audioChunksRef.current];
+        audioChunksRef.current = [];
+
+        if (chunks.length === 0) {
+          return;
+        }
+
+        const durationMs = recordingStartTimeRef.current ? Date.now() - recordingStartTimeRef.current : 0;
+        if (durationMs < 400) {
+          setSpeechError('Recording was too short to transcribe. Please speak clearly and try again.');
+          return;
+        }
+
+        const audioBlob = new Blob(chunks, { type: mimeType });
+        if (audioBlob.size < 500) {
+          setSpeechError('Recorded audio contained no audible speech signal. Please try again or type manually.');
+          return;
+        }
+
+        setIsTranscribingAudio(true);
+        const res = await transcribeInterviewAudio(sessionId, audioBlob);
+        setIsTranscribingAudio(false);
+
+        if (res.success && res.data?.transcript?.trim()) {
+          const transcript = res.data.transcript.trim();
+          setAnswerText((prev) => (prev.trim() ? `${prev.trim()} ${transcript}` : transcript));
+          setSpeechError(null);
+        } else {
+          const errMsg = res.error || 'No speech detected in audio clip.';
+          setSpeechError(`${errMsg} You can speak again, use browser dictation, or type manually.`);
+        }
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start(250); // Slice chunks every 250ms
+    } catch (err) {
+      stopMediaStreamTracks();
+      setIsRecordingAudio(false);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setSpeechError('Microphone permission was denied. Please allow microphone access in your browser or continue typing manually.');
+      } else {
+        setSpeechError('Could not access microphone hardware. Please continue typing manually.');
+      }
+    }
+  };
+
+  const stopDeepgramRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+  };
+
+  const cancelDeepgramRecording = () => {
+    audioChunksRef.current = [];
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+    stopMediaStreamTracks();
+    setIsRecordingAudio(false);
+  };
+
+  // Browser Speech recognition handlers (fallback/live dictation)
   const startVoiceRecognition = () => {
     if (!isSpeechRecognitionSupported) {
       setSpeechError('Speech recognition is not supported in this browser. Please type your response manually.');
@@ -372,6 +592,9 @@ export default function InterviewRoom() {
     }
 
     setSpeechError(null);
+    if (isRecordingAudio) {
+      cancelDeepgramRecording();
+    }
 
     try {
       if (recognitionRef.current) {
@@ -456,18 +679,40 @@ export default function InterviewRoom() {
     }
   };
 
-  // Safe global cleanup on unmount: cancel speech synthesis & stop microphone
+  // Safe global cleanup on unmount: stop audio playback, recordings & microphone tracks
   useEffect(() => {
     return () => {
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
+      // 1. Deepgram TTS audio element
+      if (deepgramAudioRef.current) {
+        try {
+          deepgramAudioRef.current.pause();
+          deepgramAudioRef.current = null;
+        } catch {}
       }
+      if (audioPlaybackUrlRef.current) {
+        try {
+          URL.revokeObjectURL(audioPlaybackUrlRef.current);
+          audioPlaybackUrlRef.current = null;
+        } catch {}
+      }
+      // 2. Browser speech synthesis
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {}
+      }
+      // 3. Deepgram MediaRecorder and microphone tracks
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {}
+      }
+      stopMediaStreamTracks();
+      // 4. Browser speech recognition
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
-        } catch {
-          // ignore
-        }
+        } catch {}
       }
     };
   }, []);
@@ -514,6 +759,13 @@ export default function InterviewRoom() {
     }
 
     setSessionId(sess.session_id);
+
+    // Check backend voice integration status asynchronously
+    getVoiceStatus(sess.session_id).then((vRes) => {
+      if (vRes.success && vRes.data) {
+        setVoiceStatus(vRes.data);
+      }
+    }).catch(() => {});
 
     // If session is already completed, load scorecard directly
     if (sess.session_status === 'completed' && (sess.scorecard_id || sess.final_scorecard_id)) {
@@ -704,11 +956,11 @@ export default function InterviewRoom() {
     if (!answerText.trim() || submitting || !sessionId) return;
 
     // Immediately stop audio speech and voice dictation on submit
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    setIsSpeaking(false);
+    handleStopSpeech();
     stopVoiceRecognition();
+    if (isRecordingAudio) {
+      cancelDeepgramRecording();
+    }
 
     setSubmitting(true);
     setError(null);
@@ -762,11 +1014,12 @@ export default function InterviewRoom() {
   const handleProceedToNextQuestion = () => {
     if (pendingNextQuestion) {
       // Stop ongoing audio and recognition when advancing
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-      setIsSpeaking(false);
+      handleStopSpeech();
       stopVoiceRecognition();
+      if (isRecordingAudio) {
+        cancelDeepgramRecording();
+      }
+      setIsTranscribingAudio(false);
       setSpeechError(null);
       setInterimTranscript('');
       setExecutionResult(null);
@@ -1255,14 +1508,26 @@ export default function InterviewRoom() {
                 <div className="flex items-center space-x-2">
                   <span className="text-xs font-bold text-white tracking-wide">AI Interviewer</span>
                   <span className="text-slate-600">•</span>
-                  <span className="text-[11px] text-slate-400">English Voice (en-US / en-GB)</span>
+                  <span className="text-[11px] text-slate-400">
+                    {speakingSource === 'deepgram'
+                      ? 'Deepgram Aura Voice'
+                      : speakingSource === 'browser'
+                      ? 'Browser Speech Voice'
+                      : voiceStatus?.configured
+                      ? 'Deepgram Voice Ready'
+                      : 'Browser Voice Ready'}
+                  </span>
                 </div>
                 {/* Speaking State Pill */}
                 <div className="flex items-center space-x-1.5 mt-0.5">
                   {isSpeaking ? (
                     <span className="text-[11px] font-semibold text-emerald-300 flex items-center space-x-1 animate-pulse">
                       <Radio className="w-3 h-3 text-emerald-400 animate-ping" />
-                      <span>Speaking Question Aloud...</span>
+                      <span>
+                        {speakingSource === 'deepgram'
+                          ? 'Speaking via Deepgram Aura...'
+                          : 'Speaking Question Aloud...'}
+                      </span>
                     </span>
                   ) : isMuted ? (
                     <span className="text-[11px] text-slate-400 flex items-center space-x-1 font-mono">
@@ -1711,38 +1976,81 @@ export default function InterviewRoom() {
                       Your Technical Response:
                     </label>
 
-                    {/* Speech Recognition Voice Input Toggle Button */}
-                    {isSpeechRecognitionSupported ? (
+                    <div className="flex items-center flex-wrap gap-2">
+                      {/* Deepgram High-Fidelity Voice Recording Button */}
                       <button
                         type="button"
-                        onClick={handleToggleVoiceInput}
-                        id="toggle-voice-input-btn"
-                        disabled={submitting || !!lastEvaluation}
-                        className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition ${
-                          isListening
-                            ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30 animate-pulse'
-                            : 'bg-indigo-950/60 text-indigo-300 border border-indigo-800/60 hover:bg-indigo-900/60'
+                        onClick={isRecordingAudio ? stopDeepgramRecording : startDeepgramRecording}
+                        id="record-voice-deepgram-btn"
+                        disabled={submitting || isTranscribingAudio || !!lastEvaluation}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition ${
+                          isRecordingAudio
+                            ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30 animate-pulse'
+                            : 'bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white shadow-md shadow-indigo-600/20'
                         } disabled:opacity-50 disabled:cursor-not-allowed`}
-                        title={isListening ? "Stop voice dictation" : "Start speaking response in English"}
-                        aria-label={isListening ? "Stop voice input" : "Start voice input in English"}
+                        title={isRecordingAudio ? "Stop recording and transcribe with Deepgram" : "Record your spoken response for AI transcription"}
+                        aria-label={isRecordingAudio ? "Stop recording and transcribe" : "Record spoken answer"}
                       >
-                        {isListening ? (
+                        {isRecordingAudio ? (
                           <>
-                            <MicOff className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Stop Voice Input</span>
+                            <Square className="w-3 h-3 fill-current text-white" />
+                            <span>Done Speaking (Transcribe)</span>
+                          </>
+                        ) : isTranscribingAudio ? (
+                          <>
+                            <RotateCcw className="w-3.5 h-3.5 animate-spin text-white" />
+                            <span>Transcribing...</span>
                           </>
                         ) : (
                           <>
-                            <Mic className="w-3.5 h-3.5 text-indigo-400" />
-                            <span>Voice Input (en-US)</span>
+                            <Mic className="w-3.5 h-3.5 text-white" />
+                            <span>Record Voice Answer</span>
                           </>
                         )}
                       </button>
-                    ) : (
-                      <span className="text-[11px] text-slate-500 font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800" title="Web Speech Recognition is not supported by this browser engine">
-                        Voice Dictation Unsupported (Manual Typing Active)
-                      </span>
-                    )}
+
+                      {/* Cancel Recording button when active */}
+                      {isRecordingAudio && (
+                        <button
+                          type="button"
+                          onClick={cancelDeepgramRecording}
+                          id="cancel-voice-recording-btn"
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+                          title="Discard recording without transcribing"
+                        >
+                          Cancel
+                        </button>
+                      )}
+
+                      {/* Live Browser Speech Recognition Button (Live Dictation / Fallback) */}
+                      {isSpeechRecognitionSupported && (
+                        <button
+                          type="button"
+                          onClick={handleToggleVoiceInput}
+                          id="toggle-voice-input-btn"
+                          disabled={submitting || isRecordingAudio || isTranscribingAudio || !!lastEvaluation}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition ${
+                            isListening
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 animate-pulse'
+                              : 'bg-slate-800/80 text-slate-400 border border-slate-700/80 hover:text-slate-200'
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
+                          title={isListening ? "Stop browser dictation" : "Use browser speech recognition for live typing"}
+                          aria-label={isListening ? "Stop browser dictation" : "Live browser dictation"}
+                        >
+                          {isListening ? (
+                            <>
+                              <MicOff className="w-3 h-3 text-amber-400" />
+                              <span>Stop Browser Dictation</span>
+                            </>
+                          ) : (
+                            <>
+                              <Radio className="w-3 h-3 text-indigo-400" />
+                              <span>Live Browser Dictation</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex items-center space-x-3 font-mono text-[11px]">
@@ -1752,6 +2060,46 @@ export default function InterviewRoom() {
                     <span>{answerText.length} characters</span>
                   </div>
                 </div>
+
+                {/* Active Deepgram Recording Status Banner */}
+                {isRecordingAudio && (
+                  <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-900/60 text-xs text-rose-200 flex items-center justify-between gap-3 animate-in fade-in">
+                    <div className="flex items-center space-x-2.5">
+                      <span className="w-3 h-3 rounded-full bg-rose-500 animate-ping shrink-0" />
+                      <div>
+                        <span className="font-bold text-white block">Recording voice answer...</span>
+                        <span className="text-[11px] text-rose-300">Speak clearly. When finished, click "Done Speaking" to transcribe into your response.</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={stopDeepgramRecording}
+                        className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow"
+                      >
+                        Done Speaking
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelDeepgramRecording}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Deepgram Transcription Processing Banner */}
+                {isTranscribingAudio && (
+                  <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-900/60 text-xs text-indigo-200 flex items-center space-x-2.5 animate-in fade-in">
+                    <RotateCcw className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
+                    <div>
+                      <span className="font-bold text-white block">Transcribing Audio with Deepgram AI...</span>
+                      <span className="text-[11px] text-indigo-300">Processing spoken response using neural speech models. Please wait a moment.</span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Active Listening Status Indicator */}
                 {isListening && (
