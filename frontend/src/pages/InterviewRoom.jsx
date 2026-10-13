@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
   getAssignmentSession,
@@ -15,6 +15,8 @@ import {
 } from '../api/client';
 import ProctoringPreflightModal from '../components/ProctoringPreflightModal';
 import ProctoringCameraWidget from '../components/ProctoringCameraWidget';
+import aiInterviewerImg from '../assets/ai_interviewer.jpg';
+import candidateAvatarImg from '../assets/candidate_avatar.jpg';
 import {
   Sparkles,
   Clock,
@@ -51,11 +53,29 @@ import {
   ServerCrash,
   AlertTriangle,
   Loader2,
+  PhoneOff,
+  Video,
+  VideoOff,
+  Settings,
+  HelpCircle,
+  MessageSquare,
+  Compass,
+  Lightbulb,
+  Maximize2,
+  Keyboard,
+  Check,
+  X,
+  User,
+  Sliders,
+  Briefcase,
+  BookOpen,
+  Info,
 } from 'lucide-react';
 
 export default function InterviewRoom() {
   const { assignmentId } = useParams();
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   // Session & Question State
   const [sessionId, setSessionId] = useState(null);
@@ -68,6 +88,16 @@ export default function InterviewRoom() {
   const [activeQuestion, setActiveQuestion] = useState(null);
   const [answerText, setAnswerText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Navigation & Workspace Tabs ('room' | 'navigator' | 'code' | 'notes' | 'guide' | 'chat' | 'feedback' | 'settings')
+  const [activeTab, setActiveTab] = useState('room');
+  const [inputMode, setInputMode] = useState('voice'); // 'voice' | 'type'
+  const [candidateNotes, setCandidateNotes] = useState('');
+  const [showEndModal, setShowEndModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [showGuideModal, setShowGuideModal] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(true);
 
   // Immediate Evaluation Feedback State (between questions)
   const [lastEvaluation, setLastEvaluation] = useState(null);
@@ -94,7 +124,7 @@ export default function InterviewRoom() {
 
   const handleLanguageSelect = (lang) => {
     setSelectedLanguage(lang);
-    if (!answerText.trim() || Object.values(CODE_TEMPLATES).some(t => t.trim() === answerText.trim())) {
+    if (!answerText.trim() || Object.values(CODE_TEMPLATES).some((t) => t.trim() === answerText.trim())) {
       setAnswerText(CODE_TEMPLATES[lang] || '');
     }
   };
@@ -103,7 +133,6 @@ export default function InterviewRoom() {
   const [secondsRemaining, setSecondsRemaining] = useState(null);
   const timerRef = useRef(null);
 
-  // --------------------------------------------------------------------------
   // --------------------------------------------------------------------------
   // Deepgram Voice & Web Speech Synthesis (AI Interviewer Voice & Spoken Questions)
   // --------------------------------------------------------------------------
@@ -126,6 +155,7 @@ export default function InterviewRoom() {
   const mediaStreamRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recordingStartTimeRef = useRef(null);
+  const isStartingRecordingRef = useRef(false);
 
   // Browser Web Speech Recognition fallback state
   const [isListening, setIsListening] = useState(false);
@@ -134,8 +164,8 @@ export default function InterviewRoom() {
   const recognitionRef = useRef(null);
 
   // Runtime check for SpeechRecognition support
-  const isSpeechRecognitionSupported = typeof window !== 'undefined' &&
-    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const isSpeechRecognitionSupported =
+    typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
   // --------------------------------------------------------------------------
   // Level 1 Proctoring & Telemetry State
@@ -143,10 +173,13 @@ export default function InterviewRoom() {
   const [proctoringConsentGiven, setProctoringConsentGiven] = useState(false);
   const proctoringQueueRef = useRef([]);
 
-  const handleProctoringEvent = useCallback((event) => {
-    if (!sessionId) return;
-    proctoringQueueRef.current.push(event);
-  }, [sessionId]);
+  const handleProctoringEvent = useCallback(
+    (event) => {
+      if (!sessionId) return;
+      proctoringQueueRef.current.push(event);
+    },
+    [sessionId]
+  );
 
   // Periodic flush of batched proctoring events (every 8 seconds)
   useEffect(() => {
@@ -219,7 +252,6 @@ export default function InterviewRoom() {
       const rawApiUrl = import.meta.env.VITE_API_URL;
       let apiBase = typeof rawApiUrl === 'string' ? rawApiUrl.trim().replace(/\/+$/, '') : '';
 
-      // Preserve local development support with safe dev fallback
       if (!apiBase && import.meta.env.DEV) {
         apiBase = 'http://localhost:8000';
       }
@@ -232,20 +264,8 @@ export default function InterviewRoom() {
         isValidBackendUrl = false;
       }
 
-      // Never send proctoring events to frontend origin if backend URL is missing or invalid
-      if (!isValidBackendUrl) {
-        if (import.meta.env.DEV) {
-          console.warn('[Proctoring] Skipping beforeunload sendBeacon: backend API URL is missing or invalid.');
-        }
-        return;
-      }
-
-      if (typeof navigator === 'undefined' || !navigator.sendBeacon) {
-        if (import.meta.env.DEV) {
-          console.warn('[Proctoring] navigator.sendBeacon is unavailable; keeping events in queue.');
-        }
-        return;
-      }
+      if (!isValidBackendUrl) return;
+      if (typeof navigator === 'undefined' || !navigator.sendBeacon) return;
 
       const batch = [...proctoringQueueRef.current];
       try {
@@ -253,10 +273,7 @@ export default function InterviewRoom() {
         const beaconUrl = `${apiBase}/api/interview-rooms/sessions/${sessionId}/proctoring-events`;
         const accepted = navigator.sendBeacon(beaconUrl, blob);
         if (accepted) {
-          // Browser accepted payload for queuing; remove transmitted events from queue
           proctoringQueueRef.current = proctoringQueueRef.current.slice(batch.length);
-        } else if (import.meta.env.DEV) {
-          console.warn('[Proctoring] navigator.sendBeacon rejected payload queuing; keeping events in queue.');
         }
       } catch (err) {
         if (import.meta.env.DEV) {
@@ -285,7 +302,7 @@ export default function InterviewRoom() {
     };
   }, []);
 
-  // Voice selection helper: Prefer English (en-US, en-GB, en-IN)
+  // Voice selection helper: Prefer English
   const getEnglishVoice = useCallback(() => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
     const voices = window.speechSynthesis.getVoices();
@@ -301,118 +318,120 @@ export default function InterviewRoom() {
   }, []);
 
   // Browser SpeechSynthesis fallback
-  const speakQuestionBrowser = useCallback((text) => {
-    if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    if (isMuted) {
-      setIsSpeaking(false);
-      setSpeakingSource(null);
-      return;
-    }
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    const selectedVoice = getEnglishVoice();
-    if (selectedVoice) {
-      utterance.voice = selectedVoice;
-      utterance.lang = selectedVoice.lang || 'en-US';
-    } else {
-      utterance.lang = 'en-US';
-    }
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-
-    utterance.onstart = () => {
-      setIsSpeaking(true);
-      setSpeakingSource('browser');
-      setSpeechBlocked(false);
-    };
-
-    utterance.onend = () => {
-      setIsSpeaking(false);
-      setSpeakingSource(null);
-    };
-
-    utterance.onerror = (e) => {
-      setIsSpeaking(false);
-      setSpeakingSource(null);
-      if (e.error === 'not-allowed') {
-        setSpeechBlocked(true);
+  const speakQuestionBrowser = useCallback(
+    (text) => {
+      if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      if (isMuted) {
+        setIsSpeaking(false);
+        setSpeakingSource(null);
+        return;
       }
-    };
 
-    try {
-      window.speechSynthesis.speak(utterance);
-    } catch {
-      setSpeechBlocked(true);
-      setIsSpeaking(false);
-      setSpeakingSource(null);
-    }
-  }, [isMuted, getEnglishVoice]);
+      const utterance = new SpeechSynthesisUtterance(text);
+      const selectedVoice = getEnglishVoice();
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+        utterance.lang = selectedVoice.lang || 'en-US';
+      } else {
+        utterance.lang = 'en-US';
+      }
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+
+      utterance.onstart = () => {
+        setIsSpeaking(true);
+        setSpeakingSource('browser');
+        setSpeechBlocked(false);
+      };
+
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        setSpeakingSource(null);
+      };
+
+      utterance.onerror = (e) => {
+        setIsSpeaking(false);
+        setSpeakingSource(null);
+        if (e.error === 'not-allowed') {
+          setSpeechBlocked(true);
+        }
+      };
+
+      try {
+        window.speechSynthesis.speak(utterance);
+      } catch {
+        setSpeechBlocked(true);
+        setIsSpeaking(false);
+        setSpeakingSource(null);
+      }
+    },
+    [isMuted, getEnglishVoice]
+  );
 
   // Master question speaker: Prefers Deepgram TTS (Aura), seamlessly falls back to browser speechSynthesis
-  const speakQuestion = useCallback(async (text) => {
-    if (!text) return;
+  const speakQuestion = useCallback(
+    async (text) => {
+      if (!text) return;
 
-    // Stop any ongoing audio first
-    handleStopSpeech();
+      handleStopSpeech();
 
-    if (isMuted) {
-      setIsSpeaking(false);
-      setSpeakingSource(null);
-      return;
-    }
-
-    // Try Deepgram TTS if sessionId is available
-    if (sessionId) {
-      try {
-        const res = await synthesizeInterviewSpeech(sessionId, text);
-        if (res.success && res.data instanceof Blob && res.data.size > 0) {
-          const blobUrl = URL.createObjectURL(res.data);
-          audioPlaybackUrlRef.current = blobUrl;
-          const audio = new Audio(blobUrl);
-
-          audio.onplay = () => {
-            setIsSpeaking(true);
-            setSpeakingSource('deepgram');
-            setSpeechBlocked(false);
-          };
-
-          audio.onended = () => {
-            setIsSpeaking(false);
-            setSpeakingSource(null);
-            if (audioPlaybackUrlRef.current) {
-              URL.revokeObjectURL(audioPlaybackUrlRef.current);
-              audioPlaybackUrlRef.current = null;
-            }
-            deepgramAudioRef.current = null;
-          };
-
-          audio.onerror = () => {
-            setIsSpeaking(false);
-            setSpeakingSource(null);
-            if (audioPlaybackUrlRef.current) {
-              URL.revokeObjectURL(audioPlaybackUrlRef.current);
-              audioPlaybackUrlRef.current = null;
-            }
-            deepgramAudioRef.current = null;
-            // Fallback to browser TTS on audio error
-            speakQuestionBrowser(text);
-          };
-
-          deepgramAudioRef.current = audio;
-          await audio.play();
-          return;
-        }
-      } catch {
-        // Deepgram playback failed or rejected by browser autoplay policy -> fallback to browser
+      if (isMuted) {
+        setIsSpeaking(false);
+        setSpeakingSource(null);
+        return;
       }
-    }
 
-    // Fallback to browser speech synthesis
-    speakQuestionBrowser(text);
-  }, [sessionId, isMuted, speakQuestionBrowser]);
+      if (sessionId) {
+        try {
+          const res = await synthesizeInterviewSpeech(sessionId, text);
+          if (res.success && res.data instanceof Blob && res.data.size > 0) {
+            const blobUrl = URL.createObjectURL(res.data);
+            audioPlaybackUrlRef.current = blobUrl;
+            const audio = new Audio(blobUrl);
 
-  // Auto-speak newly active question once (guarded against re-renders via ref)
+            audio.onplay = () => {
+              setIsSpeaking(true);
+              setSpeakingSource('deepgram');
+              setSpeechBlocked(false);
+            };
+
+            audio.onended = () => {
+              setIsSpeaking(false);
+              setSpeakingSource(null);
+              if (audioPlaybackUrlRef.current) {
+                URL.revokeObjectURL(audioPlaybackUrlRef.current);
+                audioPlaybackUrlRef.current = null;
+              }
+              deepgramAudioRef.current = null;
+            };
+
+            audio.onerror = () => {
+              setIsSpeaking(false);
+              setSpeakingSource(null);
+              if (audioPlaybackUrlRef.current) {
+                URL.revokeObjectURL(audioPlaybackUrlRef.current);
+                audioPlaybackUrlRef.current = null;
+              }
+              deepgramAudioRef.current = null;
+              speakQuestionBrowser(text);
+            };
+
+            deepgramAudioRef.current = audio;
+            await audio.play();
+            return;
+          }
+        } catch {
+          // Playback rejected by autoplay policy -> fallback
+        }
+      }
+
+      speakQuestionBrowser(text);
+    },
+    [sessionId, isMuted, speakQuestionBrowser]
+  );
+
+  // Auto-speak newly active question once
   useEffect(() => {
     if (!activeQuestion || !activeQuestion.question_text || isCompleted) return;
 
@@ -424,7 +443,6 @@ export default function InterviewRoom() {
     }
   }, [activeQuestion, isMuted, isCompleted, speakQuestion]);
 
-  // Speech synthesis user controls
   const handlePlayQuestion = () => {
     if (!activeQuestion?.question_text) return;
     setSpeechBlocked(false);
@@ -464,13 +482,10 @@ export default function InterviewRoom() {
     });
   };
 
-  // Helper to safely stop all media tracks
   const stopMediaStreamTracks = () => {
     if (mediaStreamRef.current) {
       try {
-        mediaStreamRef.current.getTracks().forEach((track) => {
-          track.stop();
-        });
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
       } catch {}
       mediaStreamRef.current = null;
     }
@@ -483,8 +498,18 @@ export default function InterviewRoom() {
       return;
     }
 
+    if (!sessionId) {
+      setSpeechError('Active interview session is not ready. Please refresh or retry.');
+      return;
+    }
+
+    if (isRecordingAudio || isTranscribingAudio || isStartingRecordingRef.current) {
+      return;
+    }
+
+    isStartingRecordingRef.current = true;
     setSpeechError(null);
-    stopVoiceRecognition(); // Stop browser speech recognition if active
+    stopVoiceRecognition();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -494,8 +519,12 @@ export default function InterviewRoom() {
       if (typeof MediaRecorder !== 'undefined') {
         if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
           mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+          mimeType = 'audio/webm';
         } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
           mimeType = 'audio/mp4';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+          mimeType = 'audio/ogg';
         } else if (MediaRecorder.isTypeSupported('audio/wav')) {
           mimeType = 'audio/wav';
         }
@@ -512,16 +541,20 @@ export default function InterviewRoom() {
 
       recorder.onstart = () => {
         setIsRecordingAudio(true);
+        isStartingRecordingRef.current = false;
         recordingStartTimeRef.current = Date.now();
+        setSpeechError(null);
       };
 
       recorder.onerror = () => {
+        isStartingRecordingRef.current = false;
         stopMediaStreamTracks();
         setIsRecordingAudio(false);
         setSpeechError('Microphone recording error occurred. Manual typing remains active.');
       };
 
       recorder.onstop = async () => {
+        isStartingRecordingRef.current = false;
         stopMediaStreamTracks();
         setIsRecordingAudio(false);
 
@@ -529,22 +562,24 @@ export default function InterviewRoom() {
         audioChunksRef.current = [];
 
         if (chunks.length === 0) {
+          setSpeechError('No audio data was captured. Please check your microphone and speak clearly.');
           return;
         }
 
-        const durationMs = recordingStartTimeRef.current ? Date.now() - recordingStartTimeRef.current : 0;
-        if (durationMs < 400) {
-          setSpeechError('Recording was too short to transcribe. Please speak clearly and try again.');
-          return;
-        }
-
-        const audioBlob = new Blob(chunks, { type: mimeType });
-        if (audioBlob.size < 500) {
+        const audioBlob = new Blob(chunks, { type: recorder.mimeType || mimeType });
+        if (audioBlob.size === 0) {
           setSpeechError('Recorded audio contained no audible speech signal. Please try again or type manually.');
           return;
         }
 
+        const durationMs = recordingStartTimeRef.current ? Date.now() - recordingStartTimeRef.current : 0;
+        if (durationMs < 200 && audioBlob.size < 80) {
+          setSpeechError('Recording was too short to transcribe. Please speak clearly and try again.');
+          return;
+        }
+
         setIsTranscribingAudio(true);
+        setSpeechError(null);
         const res = await transcribeInterviewAudio(sessionId, audioBlob);
         setIsTranscribingAudio(false);
 
@@ -559,8 +594,9 @@ export default function InterviewRoom() {
       };
 
       mediaRecorderRef.current = recorder;
-      recorder.start(250); // Slice chunks every 250ms
+      recorder.start(250);
     } catch (err) {
+      isStartingRecordingRef.current = false;
       stopMediaStreamTracks();
       setIsRecordingAudio(false);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -574,6 +610,11 @@ export default function InterviewRoom() {
   const stopDeepgramRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
+        if (mediaRecorderRef.current.state === 'recording') {
+          try {
+            mediaRecorderRef.current.requestData();
+          } catch {}
+        }
         mediaRecorderRef.current.stop();
       } catch {}
     }
@@ -581,16 +622,23 @@ export default function InterviewRoom() {
 
   const cancelDeepgramRecording = () => {
     audioChunksRef.current = [];
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    isStartingRecordingRef.current = false;
+    if (mediaRecorderRef.current) {
       try {
-        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.onstop = null;
+        mediaRecorderRef.current.ondataavailable = null;
+        mediaRecorderRef.current.onerror = null;
+        if (mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
       } catch {}
+      mediaRecorderRef.current = null;
     }
     stopMediaStreamTracks();
     setIsRecordingAudio(false);
   };
 
-  // Browser Speech recognition handlers (fallback/live dictation)
+  // Browser Speech recognition handlers
   const startVoiceRecognition = () => {
     if (!isSpeechRecognitionSupported) {
       setSpeechError('Speech recognition is not supported in this browser. Please type your response manually.');
@@ -626,10 +674,7 @@ export default function InterviewRoom() {
           if (event.results[i].isFinal) {
             const cleanSegment = segment.trim();
             if (cleanSegment) {
-              setAnswerText((prev) => {
-                if (!prev.trim()) return cleanSegment;
-                return `${prev.trim()} ${cleanSegment}`;
-              });
+              setAnswerText((prev) => (prev.trim() ? `${prev.trim()} ${cleanSegment}` : cleanSegment));
             }
           } else {
             interim += segment;
@@ -669,9 +714,7 @@ export default function InterviewRoom() {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
     setIsListening(false);
     setInterimTranscript('');
@@ -685,10 +728,9 @@ export default function InterviewRoom() {
     }
   };
 
-  // Safe global cleanup on unmount: stop audio playback, recordings & microphone tracks
+  // Safe global cleanup on unmount
   useEffect(() => {
     return () => {
-      // 1. Deepgram TTS audio element
       if (deepgramAudioRef.current) {
         try {
           deepgramAudioRef.current.pause();
@@ -701,20 +743,23 @@ export default function InterviewRoom() {
           audioPlaybackUrlRef.current = null;
         } catch {}
       }
-      // 2. Browser speech synthesis
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         try {
           window.speechSynthesis.cancel();
         } catch {}
       }
-      // 3. Deepgram MediaRecorder and microphone tracks
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      if (mediaRecorderRef.current) {
         try {
-          mediaRecorderRef.current.stop();
+          mediaRecorderRef.current.onstop = null;
+          mediaRecorderRef.current.ondataavailable = null;
+          mediaRecorderRef.current.onerror = null;
+          if (mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+          }
         } catch {}
+        mediaRecorderRef.current = null;
       }
       stopMediaStreamTracks();
-      // 4. Browser speech recognition
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -723,209 +768,210 @@ export default function InterviewRoom() {
     };
   }, []);
 
-  // 1. Initialize or resume session
-  const initSession = useCallback(async (isRetry = false) => {
-    if (!assignmentId) return;
-    if (isRetry) {
-      setIsRetrying(true);
-    } else {
-      setLoading(true);
-    }
-    setError(null);
-    setErrorType(null);
+  // Initialize or resume session
+  const initSession = useCallback(
+    async (isRetry = false) => {
+      if (!assignmentId) return;
+      if (isRetry) {
+        setIsRetrying(true);
+      } else {
+        setLoading(true);
+      }
+      setError(null);
+      setErrorType(null);
 
-    // Step A: Check if assignment already has an active or completed session
-    const checkRes = await getAssignmentSession(assignmentId);
-    let sess = null;
+      const checkRes = await getAssignmentSession(assignmentId);
+      let sess = null;
 
-    if (checkRes.success && checkRes.data?.has_session) {
-      const existing = checkRes.data;
-      if (existing.session_status === 'in_progress' || existing.session_status === 'completed') {
-        sess = existing;
-      } else if (existing.session_status === 'timed_out') {
+      if (checkRes.success && checkRes.data?.has_session) {
+        const existing = checkRes.data;
+        if (existing.session_status === 'in_progress' || existing.session_status === 'completed') {
+          sess = existing;
+        } else if (existing.session_status === 'timed_out') {
+          setError('Interview session duration has expired. Active attempt timed out.');
+          setErrorType('EXPIRED');
+          setLoading(false);
+          setIsRetrying(false);
+          return;
+        }
+      }
+
+      if (!sess) {
+        const startRes = await startInterviewSession(assignmentId);
+        if (!startRes.success) {
+          if (startRes.status === 409) {
+            const retryCheck = await getAssignmentSession(assignmentId);
+            if (retryCheck.success && retryCheck.data?.has_session) {
+              if (retryCheck.data.session_status === 'timed_out') {
+                setError('Interview session duration has expired. Active attempt timed out.');
+                setErrorType('EXPIRED');
+              } else {
+                sess = retryCheck.data;
+              }
+            } else {
+              setError(startRes.error || 'Active interview session conflict encountered.');
+              setErrorType('CONFLICT');
+            }
+            if (!sess) {
+              setLoading(false);
+              setIsRetrying(false);
+              return;
+            }
+          } else if (startRes.status >= 500) {
+            setError(startRes.error || 'The interview AI evaluation engine is temporarily unavailable. Please retry in a moment.');
+            setErrorType('SERVER');
+            setLoading(false);
+            setIsRetrying(false);
+            return;
+          } else if (!startRes.status || startRes.status === 0) {
+            setError('Unable to reach the interview service. Please verify network connectivity.');
+            setErrorType('NETWORK');
+            setLoading(false);
+            setIsRetrying(false);
+            return;
+          } else {
+            const errLower = (startRes.error || '').toLowerCase();
+            if (errLower.includes('expired') || errLower.includes('timed out')) {
+              setError(startRes.error || 'Interview session duration has expired.');
+              setErrorType('EXPIRED');
+            } else {
+              setError(startRes.error || 'Failed to initialize interview session.');
+              setErrorType('GENERIC');
+            }
+            setLoading(false);
+            setIsRetrying(false);
+            return;
+          }
+        } else {
+          sess = startRes.data;
+        }
+      }
+
+      if (!sess) {
+        setError('Could not retrieve interview session data. Please try again.');
+        setErrorType('GENERIC');
+        setLoading(false);
+        setIsRetrying(false);
+        return;
+      }
+
+      setSessionId(sess.session_id);
+
+      getVoiceStatus(sess.session_id)
+        .then((vRes) => {
+          if (vRes.success && vRes.data) {
+            setVoiceStatus(vRes.data);
+          }
+        })
+        .catch(() => {});
+
+      if (sess.session_status === 'completed' && (sess.scorecard_id || sess.final_scorecard_id)) {
+        setIsCompleted(true);
+        const scRes = await getSessionScorecard(sess.session_id);
+        if (scRes.success) {
+          setScorecard(scRes.data);
+        }
+        setLoading(false);
+        setIsRetrying(false);
+        return;
+      }
+
+      if (sess.session_status === 'timed_out') {
         setError('Interview session duration has expired. Active attempt timed out.');
         setErrorType('EXPIRED');
         setLoading(false);
         setIsRetrying(false);
         return;
       }
-    }
 
-    if (!sess) {
-      // Step B: No session exists yet, start a new attempt
-      const startRes = await startInterviewSession(assignmentId);
-      if (!startRes.success) {
-        if (startRes.status === 409) {
-          const retryCheck = await getAssignmentSession(assignmentId);
-          if (retryCheck.success && retryCheck.data?.has_session) {
-            if (retryCheck.data.session_status === 'timed_out') {
-              setError('Interview session duration has expired. Active attempt timed out.');
-              setErrorType('EXPIRED');
-            } else {
-              sess = retryCheck.data;
-            }
-          } else {
-            setError(startRes.error || 'Active interview session conflict encountered.');
-            setErrorType('CONFLICT');
-          }
-          if (!sess) {
-            setLoading(false);
-            setIsRetrying(false);
-            return;
-          }
-        } else if (startRes.status >= 500) {
-          setError(startRes.error || 'The interview AI evaluation engine is temporarily unavailable. Please retry in a moment.');
-          setErrorType('SERVER');
-          setLoading(false);
-          setIsRetrying(false);
-          return;
-        } else if (!startRes.status || startRes.status === 0) {
-          setError('Unable to reach the interview service. Please verify network connectivity.');
-          setErrorType('NETWORK');
-          setLoading(false);
-          setIsRetrying(false);
-          return;
-        } else {
-          const errLower = (startRes.error || '').toLowerCase();
-          if (errLower.includes('expired') || errLower.includes('timed out')) {
-            setError(startRes.error || 'Interview session duration has expired.');
-            setErrorType('EXPIRED');
-          } else {
-            setError(startRes.error || 'Failed to initialize interview session.');
-            setErrorType('GENERIC');
-          }
-          setLoading(false);
-          setIsRetrying(false);
-          return;
+      if (sess.time_remaining_seconds != null && sess.time_remaining_seconds >= 0) {
+        setSecondsRemaining(sess.time_remaining_seconds);
+      } else if (sess.expires_at) {
+        const exp = new Date(sess.expires_at).getTime();
+        const now = Date.now();
+        const diffSecs = Math.max(0, Math.floor((exp - now) / 1000));
+        setSecondsRemaining(diffSecs);
+      }
+
+      const qText =
+        sess.active_question?.question_text ||
+        sess.active_question?.question ||
+        sess.question_text ||
+        sess.question ||
+        '';
+
+      const qTopic =
+        sess.active_question?.topic ||
+        sess.topic ||
+        sess.interview_title ||
+        'Core Fundamentals';
+
+      const qDiff =
+        sess.active_question?.difficulty ||
+        sess.difficulty ||
+        sess.current_difficulty ||
+        'medium';
+
+      const qType =
+        sess.active_question?.question_type ||
+        sess.question_type ||
+        'conceptual';
+
+      const qIndex =
+        sess.question_index ??
+        sess.current_question_index ??
+        sess.active_question?.question_index ??
+        1;
+
+      const qTotal =
+        sess.total_questions ??
+        sess.total_questions_target ??
+        sess.active_question?.total_questions ??
+        5;
+
+      const qEvalMode =
+        sess.evaluator_mode ||
+        sess.active_question?.evaluator_mode ||
+        'mock_rule_engine';
+
+      const qTitle =
+        sess.interview_title ||
+        sess.active_question?.interview_title ||
+        'Adaptive Placement Interview';
+
+      const qCodingSpec = sess.active_question?.coding_spec || sess.coding_spec || null;
+
+      if (qText) {
+        setActiveQuestion({
+          session_id: sess.session_id,
+          question_index: qIndex,
+          total_questions: qTotal,
+          question_text: qText,
+          topic: qTopic,
+          difficulty: qDiff,
+          question_type: qType,
+          evaluator_mode: qEvalMode,
+          interview_title: qTitle,
+          coding_spec: qCodingSpec,
+        });
+
+        setExecutionResult(null);
+        setUseCustomInput(false);
+        setCustomInputText('');
+
+        if (qType === 'coding') {
+          setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python']);
+          setActiveTab('code'); // Auto-switch tab to code editor for coding challenge
         }
       } else {
-        sess = startRes.data;
+        setError('Unable to load question text for this interview. Please return to the dashboard or try again.');
       }
-    }
 
-    if (!sess) {
-      setError('Could not retrieve interview session data. Please try again.');
-      setErrorType('GENERIC');
       setLoading(false);
       setIsRetrying(false);
-      return;
-    }
-
-    setSessionId(sess.session_id);
-
-    // Check backend voice integration status asynchronously
-    getVoiceStatus(sess.session_id).then((vRes) => {
-      if (vRes.success && vRes.data) {
-        setVoiceStatus(vRes.data);
-      }
-    }).catch(() => {});
-
-    // If session is already completed, load scorecard directly
-    if (sess.session_status === 'completed' && (sess.scorecard_id || sess.final_scorecard_id)) {
-      setIsCompleted(true);
-      const scRes = await getSessionScorecard(sess.session_id);
-      if (scRes.success) {
-        setScorecard(scRes.data);
-      }
-      setLoading(false);
-      setIsRetrying(false);
-      return;
-    }
-
-    if (sess.session_status === 'timed_out') {
-      setError('Interview session duration has expired. Active attempt timed out.');
-      setErrorType('EXPIRED');
-      setLoading(false);
-      setIsRetrying(false);
-      return;
-    }
-
-    // Set countdown timer: prioritize server-verified integer seconds, fallback to ISO expires_at
-    if (sess.time_remaining_seconds != null && sess.time_remaining_seconds >= 0) {
-      setSecondsRemaining(sess.time_remaining_seconds);
-    } else if (sess.expires_at) {
-      const exp = new Date(sess.expires_at).getTime();
-      const now = Date.now();
-      const diffSecs = Math.max(0, Math.floor((exp - now) / 1000));
-      setSecondsRemaining(diffSecs);
-    }
-
-    // Universal resolution of active question (supports both flat and nested schemas)
-    const qText =
-      sess.active_question?.question_text ||
-      sess.active_question?.question ||
-      sess.question_text ||
-      sess.question ||
-      '';
-
-    const qTopic =
-      sess.active_question?.topic ||
-      sess.topic ||
-      sess.interview_title ||
-      'Core Fundamentals';
-
-    const qDiff =
-      sess.active_question?.difficulty ||
-      sess.difficulty ||
-      sess.current_difficulty ||
-      'medium';
-
-    const qType =
-      sess.active_question?.question_type ||
-      sess.question_type ||
-      'conceptual';
-
-    const qIndex =
-      sess.question_index ??
-      sess.current_question_index ??
-      sess.active_question?.question_index ??
-      1;
-
-    const qTotal =
-      sess.total_questions ??
-      sess.total_questions_target ??
-      sess.active_question?.total_questions ??
-      5;
-
-    const qEvalMode =
-      sess.evaluator_mode ||
-      sess.active_question?.evaluator_mode ||
-      'mock_rule_engine';
-
-    const qTitle =
-      sess.interview_title ||
-      sess.active_question?.interview_title ||
-      '';
-
-    const qCodingSpec = sess.active_question?.coding_spec || sess.coding_spec || null;
-
-    if (qText) {
-      setActiveQuestion({
-        session_id: sess.session_id,
-        question_index: qIndex,
-        total_questions: qTotal,
-        question_text: qText,
-        topic: qTopic,
-        difficulty: qDiff,
-        question_type: qType,
-        evaluator_mode: qEvalMode,
-        interview_title: qTitle,
-        coding_spec: qCodingSpec,
-      });
-
-      setExecutionResult(null);
-      setUseCustomInput(false);
-      setCustomInputText('');
-
-      if (qType === 'coding') {
-        setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python']);
-      }
-    } else {
-      setError('Unable to load question text for this interview. Please return to the dashboard or try again.');
-    }
-
-    setLoading(false);
-  }, [assignmentId, selectedLanguage]);
+    },
+    [assignmentId, selectedLanguage]
+  );
 
   useEffect(() => {
     initSession();
@@ -934,7 +980,7 @@ export default function InterviewRoom() {
     };
   }, [initSession]);
 
-  // Countdown clock tick
+  // Countdown timer
   useEffect(() => {
     if (secondsRemaining === null || secondsRemaining <= 0 || isCompleted) return;
 
@@ -951,7 +997,6 @@ export default function InterviewRoom() {
     return () => clearInterval(timerRef.current);
   }, [secondsRemaining, isCompleted]);
 
-  // Format timer mm:ss
   const formatTime = (secs) => {
     if (secs === null) return '--:--';
     const mins = Math.floor(secs / 60);
@@ -959,7 +1004,6 @@ export default function InterviewRoom() {
     return `${mins.toString().padStart(2, '0')}:${rem.toString().padStart(2, '0')}`;
   };
 
-  // Tab key indentation support in code editor
   const handleEditorKeyDown = (e) => {
     if (activeQuestion?.question_type === 'coding' && e.key === 'Tab') {
       e.preventDefault();
@@ -975,7 +1019,6 @@ export default function InterviewRoom() {
     }
   };
 
-  // Run Code in isolated sandbox against custom input or sample visible test cases
   const handleRunCode = async () => {
     if (!sessionId || !activeQuestion || runningCode || !answerText.trim()) return;
     setRunningCode(true);
@@ -1006,12 +1049,10 @@ export default function InterviewRoom() {
     }
   };
 
-  // Submit Answer or Coding Solution
   const handleSubmitAnswer = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!answerText.trim() || submitting || !sessionId) return;
+    if (!answerText.trim() || submitting || isTranscribingAudio || !sessionId) return;
 
-    // Immediately stop audio speech and voice dictation on submit
     handleStopSpeech();
     stopVoiceRecognition();
     if (isRecordingAudio) {
@@ -1043,7 +1084,6 @@ export default function InterviewRoom() {
 
     const data = res.data;
 
-    // Show evaluation modal / transition
     setLastEvaluation({
       score: data.evaluated_score ?? data.evaluation?.score ?? 0,
       feedback: data.feedback ?? data.evaluation?.feedback ?? '',
@@ -1056,7 +1096,6 @@ export default function InterviewRoom() {
 
     if (data.is_session_completed) {
       setIsCompleted(true);
-      // Fetch completed scorecard
       const scRes = await getSessionScorecard(sessionId);
       if (scRes.success) {
         setScorecard(scRes.data);
@@ -1066,10 +1105,8 @@ export default function InterviewRoom() {
     }
   };
 
-  // Move to next question after reviewing feedback
   const handleProceedToNextQuestion = () => {
     if (pendingNextQuestion) {
-      // Stop ongoing audio and recognition when advancing
       handleStopSpeech();
       stopVoiceRecognition();
       if (isRecordingAudio) {
@@ -1124,10 +1161,13 @@ export default function InterviewRoom() {
         coding_spec: nextCodingSpec,
         evaluator_mode: pendingNextQuestion.evaluator_mode || prev?.evaluator_mode,
       }));
+
       if (nextType === 'coding') {
         setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python'] || '');
+        setActiveTab('code');
       } else {
         setAnswerText('');
+        setActiveTab('room');
       }
       setLastEvaluation(null);
       setPendingNextQuestion(null);
@@ -1154,31 +1194,68 @@ export default function InterviewRoom() {
     }
     return (
       <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center space-x-1">
-        <Minus className="w-3 h-3 text-amber-400" />
-        <span>Medium Tier</span>
+        <Zap className="w-3 h-3 text-amber-400" />
+        <span>Medium</span>
       </span>
     );
   };
 
-  // Word count helper
   const wordCount = answerText.trim() ? answerText.trim().split(/\s+/).length : 0;
+
+  // Derive Interviewer Status State for Display
+  const getInterviewerState = () => {
+    if (isSpeaking) return 'speaking';
+    if (isRecordingAudio || isListening) return 'listening';
+    if (isTranscribingAudio) return 'transcribing';
+    if (submitting || runningCode) return 'thinking';
+    return 'ready';
+  };
+
+  const getInterviewerStatus = () => {
+    const st = getInterviewerState();
+    switch (st) {
+      case 'speaking':
+        return 'Speaking...';
+      case 'listening':
+        return 'Listening...';
+      case 'transcribing':
+        return 'Transcribing...';
+      case 'thinking':
+        return 'Thinking...';
+      case 'ready':
+      default:
+        return 'Ready';
+    }
+  };
+
+  // Conversational Intro Greeting Generator
+  const getQuestionIntro = (idx) => {
+    const greetings = [
+      "Great! Let's start with a foundational technical question.",
+      'Well done. Moving on to the next technical topic in our assessment.',
+      "Let's explore your understanding further with this question.",
+      'Continuing forward. Here is another core engineering challenge.',
+      'Here is the final technical challenge for this assessment.',
+    ];
+    return greetings[(idx - 1) % greetings.length] || "Let's review this technical problem.";
+  };
 
   // --------------------------------------------------------------------------
   // Loading & Error States
   // --------------------------------------------------------------------------
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#030712] text-slate-100 flex items-center justify-center p-4">
-        <div className="glass-panel p-8 rounded-2xl border border-slate-800 text-center max-w-md w-full">
-          <div className="w-12 h-12 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center mx-auto mb-4 animate-pulse">
-            <BrainCircuit className="w-6 h-6" />
+      <div className="min-h-screen bg-[#070B14] text-slate-100 flex items-center justify-center p-4">
+        <div className="glass-panel p-8 rounded-2xl border border-slate-800 text-center max-w-md w-full shadow-2xl">
+          <div className="w-14 h-14 rounded-2xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center mx-auto mb-4 animate-pulse">
+            <BrainCircuit className="w-7 h-7" />
           </div>
-          <h3 className="text-base font-semibold text-white mb-2">Connecting to AI Interview Engine</h3>
-          <p className="text-xs text-slate-400 leading-relaxed mb-4">
-            Validating candidate registration, checking schedule availability, and initializing adaptive question pipeline...
+          <h3 className="text-base font-bold text-white mb-2">Connecting to AI Interview Engine</h3>
+          <p className="text-xs text-slate-400 leading-relaxed mb-5">
+            Validating student credentials, loading verified question set, and establishing secure audio stream...
           </p>
-          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-            <div className="bg-gradient-to-r from-indigo-500 to-violet-500 h-1.5 w-2/3 animate-pulse"></div>
+          <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+            <div className="bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-500 h-1.5 w-2/3 animate-pulse"></div>
           </div>
         </div>
       </div>
@@ -1186,36 +1263,40 @@ export default function InterviewRoom() {
   }
 
   if (error && (!activeQuestion || !activeQuestion.question_text) && !scorecard) {
-    const isExpired = errorType === 'EXPIRED' || (error && (error.toLowerCase().includes('expired') || error.toLowerCase().includes('timed out')));
+    const isExpired =
+      errorType === 'EXPIRED' ||
+      (error && (error.toLowerCase().includes('expired') || error.toLowerCase().includes('timed out')));
     const isNetwork = errorType === 'NETWORK';
     const isServer = errorType === 'SERVER';
     const isConflict = errorType === 'CONFLICT';
 
     return (
-      <div className="min-h-screen bg-[#070b14] text-slate-100 flex items-center justify-center p-4 selection:bg-cyan-500/30">
-        <div className="w-full max-w-lg rounded-2xl bg-slate-900/80 border border-slate-800 shadow-2xl backdrop-blur-xl p-6 sm:p-8 relative overflow-hidden">
-          {/* Top accent line */}
-          <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${
-            isExpired
-              ? 'from-amber-500 via-rose-500 to-red-500'
-              : isNetwork
-              ? 'from-amber-500 via-orange-500 to-yellow-500'
-              : isServer
-              ? 'from-violet-500 via-indigo-500 to-cyan-500'
-              : 'from-cyan-500 via-indigo-500 to-violet-500'
-          }`} />
-
-          {/* Contextual Icon Header */}
-          <div className="flex flex-col items-center text-center mb-6">
-            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 shadow-lg ${
+      <div className="min-h-screen bg-[#070B14] text-slate-100 flex items-center justify-center p-4 selection:bg-cyan-500/30">
+        <div className="w-full max-w-lg rounded-2xl bg-slate-900/90 border border-slate-800 shadow-2xl backdrop-blur-xl p-6 sm:p-8 relative overflow-hidden">
+          <div
+            className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${
               isExpired
-                ? 'bg-amber-950/60 text-amber-400 border border-amber-800/60 shadow-amber-950/40'
+                ? 'from-amber-500 via-rose-500 to-red-500'
                 : isNetwork
-                ? 'bg-blue-950/60 text-blue-400 border border-blue-800/60 shadow-blue-950/40'
+                ? 'from-amber-500 via-orange-500 to-yellow-500'
                 : isServer
-                ? 'bg-violet-950/60 text-violet-400 border border-violet-800/60 shadow-violet-950/40'
-                : 'bg-rose-950/60 text-rose-400 border border-rose-800/60 shadow-rose-950/40'
-            }`}>
+                ? 'from-violet-500 via-indigo-500 to-cyan-500'
+                : 'from-cyan-500 via-indigo-500 to-violet-500'
+            }`}
+          />
+
+          <div className="flex flex-col items-center text-center mb-6">
+            <div
+              className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 shadow-lg ${
+                isExpired
+                  ? 'bg-amber-950/60 text-amber-400 border border-amber-800/60 shadow-amber-950/40'
+                  : isNetwork
+                  ? 'bg-blue-950/60 text-blue-400 border border-blue-800/60 shadow-blue-950/40'
+                  : isServer
+                  ? 'bg-violet-950/60 text-violet-400 border border-violet-800/60 shadow-violet-950/40'
+                  : 'bg-rose-950/60 text-rose-400 border border-rose-800/60 shadow-rose-950/40'
+              }`}
+            >
               {isExpired ? (
                 <Clock className="w-7 h-7" />
               ) : isNetwork ? (
@@ -1227,15 +1308,17 @@ export default function InterviewRoom() {
               )}
             </div>
 
-            <div className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider mb-2.5 border ${
-              isExpired
-                ? 'bg-amber-950/80 text-amber-300 border-amber-800/60'
-                : isNetwork
-                ? 'bg-blue-950/80 text-blue-300 border-blue-800/60'
-                : isServer
-                ? 'bg-violet-950/80 text-violet-300 border-violet-800/60'
-                : 'bg-rose-950/80 text-rose-300 border-rose-800/60'
-            }`}>
+            <div
+              className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider mb-2.5 border ${
+                isExpired
+                  ? 'bg-amber-950/80 text-amber-300 border-amber-800/60'
+                  : isNetwork
+                  ? 'bg-blue-950/80 text-blue-300 border-blue-800/60'
+                  : isServer
+                  ? 'bg-violet-950/80 text-violet-300 border-violet-800/60'
+                  : 'bg-rose-950/80 text-rose-300 border-rose-800/60'
+              }`}
+            >
               <span>
                 {isExpired
                   ? 'Session Expiry'
@@ -1274,7 +1357,6 @@ export default function InterviewRoom() {
             </p>
           </div>
 
-          {/* Contextual guidance card */}
           <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-300 mb-6 space-y-1.5 leading-relaxed font-mono">
             <div className="flex items-center justify-between text-[11px] text-slate-400 border-b border-slate-800/60 pb-1.5 font-sans">
               <span>Status Detail</span>
@@ -1287,7 +1369,6 @@ export default function InterviewRoom() {
             </p>
           </div>
 
-          {/* Action buttons with loading states & duplicate prevention */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
             {!isExpired && (
               <button
@@ -1334,22 +1415,21 @@ export default function InterviewRoom() {
     const isPass = pct >= 60;
 
     return (
-      <div className="min-h-screen bg-[#030712] text-slate-100 flex flex-col">
-        {/* Header */}
-        <header className="border-b border-slate-800/80 bg-slate-900/50 backdrop-blur sticky top-0 z-20">
+      <div className="min-h-screen bg-[#070B14] text-slate-100 flex flex-col">
+        <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur sticky top-0 z-20">
           <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center">
-                <Award className="w-4 h-4 text-white" />
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-600/20">
+                <Award className="w-5 h-5 text-white" />
               </div>
               <div>
                 <h1 className="text-sm font-bold text-white">Evaluation Scorecard</h1>
-                <p className="text-[11px] text-slate-400">Adaptive Mock Interview Performance Assessment</p>
+                <p className="text-[11px] text-slate-400">Adaptive Placement Mock Interview Performance Audit</p>
               </div>
             </div>
             <Link
               to="/dashboard"
-              className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center space-x-1.5 border border-slate-700 transition"
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center space-x-1.5 border border-slate-700 transition shadow"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>Back to Dashboard</span>
@@ -1358,7 +1438,6 @@ export default function InterviewRoom() {
         </header>
 
         <main className="max-w-6xl mx-auto px-4 py-8 w-full flex-1 space-y-6">
-          {/* Top Score Summary Banner */}
           <div className="glass-panel p-6 sm:p-8 rounded-2xl border border-slate-800 relative overflow-hidden">
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
               <div>
@@ -1383,30 +1462,28 @@ export default function InterviewRoom() {
                     </span>
                   )}
                 </div>
-                <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
-                  Interview Evaluation Complete
-                </h2>
-                <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
-                  {scorecard.summary_feedback}
-                </p>
+                <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Interview Evaluation Complete</h2>
+                <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">{scorecard.summary_feedback}</p>
               </div>
 
-              {/* Big Score Card */}
               <div className="flex items-center space-x-4 bg-slate-950/60 p-4 rounded-xl border border-slate-800 shrink-0">
                 <div className="text-right">
                   <div className="text-xs uppercase font-semibold text-slate-400 tracking-wider">Overall Score</div>
                   <div className="text-xs font-medium text-indigo-400">{scorecard.performance_level}</div>
                 </div>
-                <div className={`w-16 h-16 rounded-xl flex flex-col items-center justify-center font-bold text-lg border ${
-                  isPass ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                }`}>
+                <div
+                  className={`w-16 h-16 rounded-xl flex flex-col items-center justify-center font-bold text-lg border ${
+                    isPass
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                      : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                  }`}
+                >
                   <span>{scorecard.overall_score}</span>
                   <span className="text-[10px] text-slate-400 font-normal">/ 10.0</span>
                 </div>
               </div>
             </div>
 
-            {/* Difficulty Progression Track */}
             {scorecard.difficulty_progression && scorecard.difficulty_progression.length > 0 && (
               <div className="mt-6 pt-6 border-t border-slate-800/80">
                 <div className="text-xs font-semibold text-slate-300 mb-3 flex items-center space-x-1.5">
@@ -1418,9 +1495,15 @@ export default function InterviewRoom() {
                     <React.Fragment key={idx}>
                       <div className="flex items-center space-x-1.5 px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono">
                         <span className="text-slate-400">Q{idx + 1}:</span>
-                        <span className={`capitalize font-semibold ${
-                          diff === 'hard' ? 'text-rose-400' : diff === 'easy' ? 'text-emerald-400' : 'text-amber-400'
-                        }`}>
+                        <span
+                          className={`capitalize font-semibold ${
+                            diff === 'hard'
+                              ? 'text-rose-400'
+                              : diff === 'easy'
+                              ? 'text-emerald-400'
+                              : 'text-amber-400'
+                          }`}
+                        >
                           {diff}
                         </span>
                       </div>
@@ -1434,15 +1517,14 @@ export default function InterviewRoom() {
             )}
           </div>
 
-          {/* Strengths & Growth Areas Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Strengths */}
             <div className="glass-panel p-6 rounded-2xl border border-slate-800">
               <h3 className="text-sm font-bold text-emerald-400 mb-3 flex items-center space-x-2">
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Demonstrated Technical Strengths</span>
               </h3>
-              {(scorecard.strengths || scorecard.strengths_summary) && (scorecard.strengths || scorecard.strengths_summary).length > 0 ? (
+              {(scorecard.strengths || scorecard.strengths_summary) &&
+              (scorecard.strengths || scorecard.strengths_summary).length > 0 ? (
                 <ul className="space-y-2 text-xs text-slate-300">
                   {(scorecard.strengths || scorecard.strengths_summary).map((str, i) => (
                     <li key={i} className="flex items-start space-x-2">
@@ -1456,7 +1538,6 @@ export default function InterviewRoom() {
               )}
             </div>
 
-            {/* Areas for Growth */}
             <div className="glass-panel p-6 rounded-2xl border border-slate-800">
               <h3 className="text-sm font-bold text-amber-400 mb-3 flex items-center space-x-2">
                 <AlertCircle className="w-4 h-4" />
@@ -1472,12 +1553,11 @@ export default function InterviewRoom() {
                   ))}
                 </ul>
               ) : (
-                <p className="text-xs text-slate-400">Maintain continued precision across higher-order networking scenarios.</p>
+                <p className="text-xs text-slate-400">Maintain continued precision across higher-order scenarios.</p>
               )}
             </div>
           </div>
 
-          {/* Detailed Question Review Breakdown */}
           {scorecard.responses && scorecard.responses.length > 0 && (
             <div className="glass-panel p-6 rounded-2xl border border-slate-800 space-y-4">
               <h3 className="text-sm font-bold text-white flex items-center space-x-2">
@@ -1498,7 +1578,9 @@ export default function InterviewRoom() {
                         <p className="text-xs text-white font-medium">{item.question_text}</p>
                       </div>
                       <div className="text-right shrink-0">
-                        <span className="text-sm font-bold text-indigo-300 font-mono">{item.score ?? item.evaluation_score}</span>
+                        <span className="text-sm font-bold text-indigo-300 font-mono">
+                          {item.score ?? item.evaluation_score}
+                        </span>
                         <span className="text-xs text-slate-500"> / 10</span>
                       </div>
                     </div>
@@ -1525,7 +1607,6 @@ export default function InterviewRoom() {
             </div>
           )}
 
-          {/* Mandatory Explicit Algorithmic Disclaimer */}
           <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800 text-slate-400 text-xs leading-relaxed space-y-1.5">
             <div className="font-semibold text-slate-300 flex items-center space-x-1.5">
               <ShieldAlert className="w-3.5 h-3.5 text-indigo-400" />
@@ -1534,7 +1615,7 @@ export default function InterviewRoom() {
             <p>
               {scorecard.disclaimer ||
                 scorecard.algorithmic_disclaimer ||
-                "Score and feedback were computed using automated technical rubrics and adaptive difficulty thresholds. Evaluated on keyword precision, terminology depth, and protocol explanation structure. This assessment represents algorithmic interview practice and does not claim subjective human parity or absolute grading."}
+                'Score and feedback were computed using automated technical rubrics and adaptive difficulty thresholds. Evaluated on keyword precision, terminology depth, and architecture structure. This assessment represents algorithmic interview practice and does not claim subjective human parity or absolute grading.'}
             </p>
           </div>
         </main>
@@ -1543,10 +1624,18 @@ export default function InterviewRoom() {
   }
 
   // --------------------------------------------------------------------------
-  // Active Question & Answer View
+  // Active Question Face-to-Face AI Interview Workspace
   // --------------------------------------------------------------------------
   return (
-    <div className="min-h-screen bg-[#030712] text-slate-100 flex flex-col relative">
+    <div className="min-h-screen bg-[#070B14] text-slate-100 flex flex-col relative selection:bg-cyan-500/30 selection:text-cyan-200">
+      {/* Background Ambient Lighting & Cyber Grid */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+        <div className="absolute top-[-10%] right-[10%] w-[650px] h-[650px] rounded-full bg-cyan-600/10 blur-[160px]" />
+        <div className="absolute top-[30%] left-[-15%] w-[600px] h-[600px] rounded-full bg-violet-600/10 blur-[180px]" />
+        <div className="absolute bottom-[-10%] right-[20%] w-[700px] h-[700px] rounded-full bg-indigo-600/10 blur-[180px]" />
+        <div className="absolute inset-0 cyber-grid radial-fade-mask opacity-50" />
+      </div>
+
       {/* Proctoring Preflight & Consent Modal */}
       {!proctoringConsentGiven && !isCompleted && !loading && (
         <ProctoringPreflightModal
@@ -1555,880 +1644,980 @@ export default function InterviewRoom() {
         />
       )}
 
-      {/* Level 1 Proctoring Live Camera Preview (Floating PIP) */}
-      {proctoringConsentGiven && !isCompleted && sessionId && (
-        <div className="fixed bottom-6 right-6 z-30 shadow-2xl animate-in fade-in slide-in-from-bottom-4">
-          <ProctoringCameraWidget
-            onProctoringEvent={handleProctoringEvent}
-            isSessionActive={!isCompleted && !lastEvaluation}
-          />
-        </div>
-      )}
-
-      {/* Top Bar with Live Timer and Progress */}
-      <header className="border-b border-slate-800/80 bg-slate-900/50 backdrop-blur sticky top-0 z-20">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+      {/* ==================================================================== */}
+      {/* 1. Header Bar (Brand + Connectivity Badges + End Interview CTA)       */}
+      {/* ==================================================================== */}
+      <header className="relative z-20 border-b border-slate-800/80 bg-[#09101D]/90 backdrop-blur-xl sticky top-0 px-4 sm:px-6 py-2.5">
+        <div className="max-w-[1700px] mx-auto flex items-center justify-between gap-4">
+          {/* Brand Logo & Subtitle */}
           <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center">
-              <BrainCircuit className="w-4 h-4 text-white" />
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 via-indigo-600 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-600/30 border border-violet-400/30">
+              <Sparkles className="w-5 h-5 text-white" />
             </div>
             <div>
-              <span className="text-xs font-bold text-white block">
-                {activeQuestion?.interview_title || 'Adaptive Mock Interview'}
-              </span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                VFSTR • Registered: {user?.registration_number || user?.email}
-              </span>
+              <div className="flex items-center space-x-2">
+                <span className="text-sm font-bold text-white tracking-tight">VFSTR Interview</span>
+              </div>
+              <span className="text-[11px] text-slate-400 block -mt-0.5">Adaptive AI Interviews</span>
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
-            {/* Countdown Clock */}
-            <div className="flex items-center space-x-1.5 px-3 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono">
-              <Clock className="w-3.5 h-3.5 text-amber-400" />
-              <span className="text-slate-300">Remaining:</span>
-              <span className={`font-bold ${secondsRemaining !== null && secondsRemaining < 300 ? 'text-rose-400 animate-pulse' : 'text-white'}`}>
-                {formatTime(secondsRemaining)}
+          {/* Center & Right Badges + End Call Control */}
+          <div className="flex items-center space-x-2 sm:space-x-3">
+            {/* Connected Badge */}
+            <div className="hidden sm:flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-xs font-medium shadow-sm">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>Connected</span>
+            </div>
+
+            {/* Deepgram Voice Active Badge */}
+            <div className="hidden md:flex items-center space-x-1.5 px-3 py-1 rounded-full bg-cyan-950/60 border border-cyan-800/60 text-cyan-300 text-xs font-medium shadow-sm">
+              <Mic className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Deepgram Voice Active</span>
+            </div>
+
+            {/* Google Gemini / AI Provider Badge */}
+            <div className="hidden lg:flex items-center space-x-1.5 px-3 py-1 rounded-full bg-purple-950/60 border border-purple-800/60 text-purple-300 text-xs font-medium shadow-sm">
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <span>
+                {activeQuestion?.evaluator_mode === 'gemini'
+                  ? 'Google Gemini'
+                  : activeQuestion?.evaluator_mode === 'mock_rule_engine'
+                  ? 'Rule Rubric Engine'
+                  : 'AI Evaluator'}
               </span>
             </div>
 
-            <Link
-              to="/dashboard"
-              className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition"
+            {/* End Interview Red Pill Action */}
+            <button
+              type="button"
+              onClick={() => setShowEndModal(true)}
+              id="header-end-interview-btn"
+              className="px-3.5 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 hover:text-white border border-rose-800/60 text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm active:scale-95"
             >
-              Exit
-            </Link>
+              <PhoneOff className="w-3.5 h-3.5 text-rose-400" />
+              <span>End Interview</span>
+            </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-8 w-full flex-1 flex flex-col justify-between space-y-6">
-        {/* Progress Tracker Banner */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800/70">
-          <div className="flex items-center space-x-2">
-            <span className="text-xs font-mono font-bold text-indigo-400 uppercase tracking-wider">
-              Question {activeQuestion?.question_index || 1} of {activeQuestion?.total_questions || 5}
-            </span>
-            <span className="text-slate-600">•</span>
-            <span className="text-xs text-slate-300 font-medium">Topic: {activeQuestion?.topic || 'Core Fundamentals'}</span>
-            <span className="text-slate-600">•</span>
-            {activeQuestion?.question_type === 'coding' ? (
-              <span className="text-[11px] font-mono font-bold text-cyan-300 px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 flex items-center space-x-1">
-                <Terminal className="w-3 h-3 text-cyan-400" />
-                <span>Coding Problem</span>
-              </span>
-            ) : (
-              <span className="text-[11px] font-mono text-slate-400 px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
-                Conceptual
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center space-x-2">
-            {getDifficultyBadge(activeQuestion?.difficulty)}
-            {activeQuestion?.evaluator_mode === 'mock_rule_engine' ? (
-              <span className="text-[11px] font-mono font-medium text-amber-300 px-2 py-0.5 rounded bg-amber-950/40 border border-amber-800/40 flex items-center space-x-1">
-                <AlertCircle className="w-3 h-3 text-amber-400" />
-                <span>Mock Evaluator (Rule Rubric)</span>
-              </span>
-            ) : activeQuestion?.evaluator_mode === 'gemini' ? (
-              <span className="text-[11px] font-mono font-medium text-emerald-300 px-2 py-0.5 rounded bg-emerald-950/40 border border-emerald-800/40 flex items-center space-x-1">
-                <Sparkles className="w-3 h-3 text-emerald-400" />
-                <span>AI Evaluator: Google Gemini</span>
-              </span>
-            ) : (
-              <span className="text-[11px] font-mono text-indigo-300 px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
-                {activeQuestion?.evaluator_mode || 'AI Evaluator'}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Error Alert */}
-        {error && (
-          <div className="p-3.5 rounded-xl bg-rose-950/40 border border-rose-900/60 text-xs text-rose-300 flex items-center space-x-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {/* AI Interviewer & Authoritative Spoken Captions Panel */}
-        <div className="glass-panel p-6 sm:p-7 rounded-2xl border border-slate-800 space-y-4 relative overflow-hidden">
-          {/* Subtle Ambient Backlight when speaking */}
-          <div className={`absolute top-0 right-0 w-64 h-32 blur-3xl pointer-events-none transition-all duration-500 ${
-            isSpeaking ? 'bg-indigo-600/20' : 'bg-transparent'
-          }`} />
-
-          {/* AI Interviewer Header & Audio Controls */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
-            <div className="flex items-center space-x-3">
-              <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${
-                isSpeaking
-                  ? 'bg-gradient-to-tr from-indigo-500 to-violet-500 text-white shadow-lg shadow-indigo-500/30 animate-pulse'
-                  : 'bg-slate-800/80 text-indigo-400 border border-slate-700/60'
-              }`}>
-                <BrainCircuit className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center space-x-2">
-                  <span className="text-xs font-bold text-white tracking-wide">AI Interviewer</span>
-                  <span className="text-slate-600">•</span>
-                  <span className="text-[11px] text-slate-400">
-                    {speakingSource === 'deepgram'
-                      ? 'Deepgram Aura Voice'
-                      : speakingSource === 'browser'
-                      ? 'Browser Speech Voice'
-                      : voiceStatus?.configured
-                      ? 'Deepgram Voice Ready'
-                      : 'Browser Voice Ready'}
-                  </span>
-                </div>
-                {/* Speaking State Pill */}
-                <div className="flex items-center space-x-1.5 mt-0.5">
-                  {isSpeaking ? (
-                    <span className="text-[11px] font-semibold text-emerald-300 flex items-center space-x-1 animate-pulse">
-                      <Radio className="w-3 h-3 text-emerald-400 animate-ping" />
-                      <span>
-                        {speakingSource === 'deepgram'
-                          ? 'Speaking via Deepgram Aura...'
-                          : 'Speaking Question Aloud...'}
-                      </span>
-                    </span>
-                  ) : isMuted ? (
-                    <span className="text-[11px] text-slate-400 flex items-center space-x-1 font-mono">
-                      <VolumeX className="w-3 h-3 text-slate-500" />
-                      <span>Audio Muted</span>
-                    </span>
-                  ) : (
-                    <span className="text-[11px] text-indigo-300 flex items-center space-x-1 font-mono">
-                      <Volume2 className="w-3 h-3 text-indigo-400" />
-                      <span>Audio Ready</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Audio Action Buttons */}
-            <div className="flex items-center space-x-2">
-              {isSpeaking ? (
-                <button
-                  type="button"
-                  onClick={handleStopSpeech}
-                  id="stop-question-audio-btn"
-                  className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center space-x-1.5 transition"
-                  title="Stop speaking"
-                  aria-label="Stop audio speech"
-                >
-                  <Square className="w-3 h-3 fill-current" />
-                  <span>Stop Audio</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handlePlayQuestion}
-                  id="play-question-audio-btn"
-                  className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-indigo-600/20 transition"
-                  title="Play or replay question in English"
-                  aria-label="Play question audio"
-                >
-                  <Play className="w-3 h-3 fill-current" />
-                  <span>Play Question</span>
-                </button>
-              )}
-
+      {/* ==================================================================== */}
+      {/* Main Container: Sidebar + Split Workspace Body                        */}
+      {/* ==================================================================== */}
+      <div className="relative z-10 flex-1 flex max-w-[1700px] w-full mx-auto overflow-hidden">
+        {/* Left Navigation Sidebar */}
+        <aside className="hidden md:flex flex-col w-56 border-r border-slate-800/80 bg-[#070D1E]/80 backdrop-blur-md p-3 space-y-1 shrink-0">
+          {[
+            { id: 'room', label: 'Interview Room', icon: Briefcase },
+            { id: 'navigator', label: 'Question Navigator', icon: Compass },
+            { id: 'code', label: 'Code Editor', icon: Code },
+            { id: 'notes', label: 'Notes', icon: FileText },
+            { id: 'guide', label: 'Question Guide', icon: BookOpen },
+            { id: 'chat', label: 'Technical Chat', icon: MessageSquare },
+            { id: 'feedback', label: 'Feedback', icon: Award },
+            { id: 'settings', label: 'Settings', icon: Settings },
+          ].map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
               <button
+                key={item.id}
                 type="button"
-                onClick={handleToggleMute}
-                id="toggle-mute-audio-btn"
-                className={`p-2 rounded-lg text-xs font-semibold border transition ${
-                  isMuted
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
-                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                onClick={() => {
+                  if (item.id === 'settings') {
+                    setShowSettingsModal(true);
+                  } else if (item.id === 'notes') {
+                    setShowNotesModal(true);
+                  } else if (item.id === 'guide') {
+                    setShowGuideModal(true);
+                  } else {
+                    setActiveTab(item.id);
+                  }
+                }}
+                className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-medium transition text-left ${
+                  isActive
+                    ? 'bg-gradient-to-r from-violet-600/30 to-indigo-600/20 text-white border border-violet-500/40 shadow-md shadow-violet-500/10'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
                 }`}
-                title={isMuted ? "Unmute voice questions" : "Mute voice questions"}
-                aria-label={isMuted ? "Unmute question audio" : "Mute question audio"}
               >
-                {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                <Icon className={`w-4 h-4 ${isActive ? 'text-violet-400' : 'text-slate-400'}`} />
+                <span>{item.label}</span>
               </button>
-            </div>
+            );
+          })}
+
+          <div className="mt-auto pt-4 border-t border-slate-800/60 text-[10px] text-slate-500 font-mono px-2">
+            <div>STUDENT ID</div>
+            <div className="text-slate-300 font-semibold truncate">{user?.registration_number || user?.email}</div>
           </div>
+        </aside>
 
-          {/* Autoplay Blocked Notification Banner */}
-          {speechBlocked && (
-            <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-900/50 text-xs text-amber-300 flex items-center justify-between gap-3 animate-in fade-in">
-              <div className="flex items-center space-x-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-                <span>Audio autoplay was paused by browser policy. Click "Play Question" to listen.</span>
-              </div>
-              <button
-                type="button"
-                onClick={handlePlayQuestion}
-                className="px-2.5 py-1 rounded bg-amber-500 text-slate-950 font-bold text-[11px] hover:bg-amber-400 transition shrink-0"
-              >
-                Listen Now
-              </button>
-            </div>
-          )}
-
-          {/* Authoritative English Captions */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-[11px] uppercase font-bold tracking-wider text-indigo-400">
-              <span className="flex items-center space-x-1.5">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Authoritative English Captions</span>
-              </span>
-              <span className="text-slate-500 font-mono text-[10px] lowercase">
-                spoken prompt
-              </span>
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-950/90 border border-slate-800 text-slate-100 text-sm sm:text-base leading-relaxed font-medium transition-all">
-              {activeQuestion?.question_text || (
-                <div className="flex items-center space-x-2 text-rose-400 text-xs py-1">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>Interview question could not be loaded. Please click Retry below or refresh.</span>
-                </div>
-              )}
-            </div>
-
-            {activeQuestion?.question_type === 'coding' ? (
-              <p className="text-xs text-cyan-400 font-mono">
-                Coding Assessment: Write and execute your solution in <strong>{selectedLanguage}</strong>. Use "Run Code" to test against sample test cases in the isolated sandbox, then click "Submit Solution" for full automated evaluation.
-              </p>
-            ) : (
-              <p className="text-xs text-slate-400 italic">
-                Instructions: Provide a structured, technical response explaining protocol mechanics, packet flows, or architecture where applicable.
-              </p>
-            )}
-
-            {/* Problem Specifications & Sample Test Cases (For Coding Questions) */}
-            {activeQuestion?.question_type === 'coding' && activeQuestion?.coding_spec && (
-              <div className="mt-4 p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-3 animate-in fade-in text-xs">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
-                  <span className="font-mono font-bold text-cyan-300 flex items-center space-x-1.5">
-                    <Layers className="w-3.5 h-3.5" />
-                    <span>Problem Specifications & Constraints</span>
-                  </span>
-                  <span className="text-[11px] text-slate-400 font-mono">
-                    Sandboxed Evaluation Suite: {activeQuestion.coding_spec.total_evaluation_test_cases || 5} Cases
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-300">
-                  <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80">
-                    <span className="block font-bold text-slate-400 text-[11px] uppercase tracking-wider mb-1">Input Format</span>
-                    <p className="font-mono text-slate-200 whitespace-pre-line">{activeQuestion.coding_spec.input_format}</p>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80">
-                    <span className="block font-bold text-slate-400 text-[11px] uppercase tracking-wider mb-1">Output Format</span>
-                    <p className="font-mono text-slate-200 whitespace-pre-line">{activeQuestion.coding_spec.output_format}</p>
-                  </div>
-                </div>
-
-                {activeQuestion.coding_spec.constraints && (
-                  <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80 font-mono text-[11px] text-slate-300">
-                    <strong className="text-slate-400 uppercase tracking-wider mr-2">Constraints:</strong>
-                    <span>{activeQuestion.coding_spec.constraints}</span>
-                  </div>
-                )}
-
-                {/* Visible Sample Test Cases */}
-                {activeQuestion.coding_spec.sample_test_cases && activeQuestion.coding_spec.sample_test_cases.length > 0 && (
-                  <div className="space-y-2 pt-1">
-                    <span className="block font-bold text-slate-400 text-[11px] uppercase tracking-wider">
-                      Sample Test Cases:
-                    </span>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                      {activeQuestion.coding_spec.sample_test_cases.map((sc, sIdx) => (
-                        <div key={sIdx} className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] space-y-1.5">
-                          <div className="text-indigo-400 font-bold">Sample Case {sc.test_case_index}:</div>
-                          <div className="text-slate-400">
-                            <strong>Input:</strong> <span className="text-slate-200">{sc.input_data.replace(/\n/g, ' ')}</span>
-                          </div>
-                          <div className="text-slate-400">
-                            <strong>Expected Output:</strong> <span className="text-emerald-400">{sc.expected_output.replace(/\n/g, ' ')}</span>
-                          </div>
-                          {sc.explanation && (
-                            <div className="text-slate-500 text-[10px] italic">Note: {sc.explanation}</div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Response Workspace */}
-        <form onSubmit={handleSubmitAnswer} className="space-y-4 flex-1 flex flex-col justify-between">
-          <div className="space-y-3 flex-1">
-            {activeQuestion?.question_type === 'coding' ? (
-              /* Coding Workspace Controls */
-              <div className="space-y-3">
-                {/* Compiler Toolbar */}
-                <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-3 shadow-lg">
-                  <div className="flex items-center flex-wrap gap-2">
-                    <span className="text-xs font-medium text-slate-300 flex items-center space-x-1.5 mr-1">
-                      <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Language:</span>
-                    </span>
-                    {['Python', 'Java', 'C', 'C++'].map((lang) => (
-                      <button
-                        key={lang}
-                        type="button"
-                        onClick={() => handleLanguageSelect(lang)}
-                        disabled={submitting || runningCode}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold transition ${
-                          selectedLanguage === lang
-                            ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/30'
-                            : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
-                        }`}
-                      >
-                        {lang}
-                      </button>
-                    ))}
-
-                    <span className="text-slate-700 mx-1">|</span>
-
-                    <button
-                      type="button"
-                      onClick={() => setUseCustomInput(!useCustomInput)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-mono transition border ${
-                        useCustomInput
-                          ? 'bg-indigo-950/80 text-indigo-300 border-indigo-700 font-semibold'
-                          : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-slate-200'
-                      }`}
-                    >
-                      {useCustomInput ? '✓ Custom Input Active' : '+ Custom Input (stdin)'}
-                    </button>
-                  </div>
-
-                  {/* Sandbox Run & Submit Buttons */}
-                  <div className="flex items-center space-x-2">
-                    <button
-                      type="button"
-                      onClick={handleRunCode}
-                      id="run-code-btn"
-                      disabled={runningCode || submitting || !answerText.trim()}
-                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800/60 hover:border-cyan-600 text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {runningCode ? (
-                        <>
-                          <RotateCcw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                          <span>Executing Sandbox...</span>
-                        </>
-                      ) : (
-                        <>
-                          <PlayCircle className="w-4 h-4 text-cyan-400" />
-                          <span>Run Code</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      type="submit"
-                      id="submit-solution-btn"
-                      disabled={submitting || runningCode || !answerText.trim()}
-                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md shadow-emerald-600/20 transition flex items-center space-x-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {submitting ? (
-                        <>
-                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                          <span>Evaluating Solution...</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>Submit Solution</span>
-                          <Send className="w-3.5 h-3.5" />
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Code Editor */}
-                <div className="relative rounded-xl border border-slate-800 overflow-hidden bg-slate-950 shadow-inner">
-                  <div className="flex items-center justify-between px-3.5 py-1.5 bg-slate-900 border-b border-slate-800 text-[11px] font-mono text-slate-400">
-                    <div className="flex items-center space-x-2">
-                      <Code className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>{selectedLanguage} Editor (Tab Key Indentation Supported)</span>
-                    </div>
-                    <span>{answerText.length} characters</span>
-                  </div>
-                  <textarea
-                    id="student-answer"
-                    rows={12}
-                    value={answerText}
-                    onChange={(e) => setAnswerText(e.target.value)}
-                    onKeyDown={handleEditorKeyDown}
-                    disabled={submitting || !!lastEvaluation}
-                    placeholder={`Write your ${selectedLanguage} solution here...`}
-                    className="w-full bg-slate-950 text-slate-100 placeholder-slate-600 text-xs font-mono p-4 resize-y outline-none leading-relaxed focus:ring-1 focus:ring-cyan-500 disabled:opacity-50"
+        {/* Central Workspace Area */}
+        <main className="flex-1 p-3 sm:p-5 flex flex-col space-y-4 overflow-y-auto">
+          {/* Main Top Split Grid: AI Interviewer Video Panel (Left) & Conversational Panel (Right) */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1">
+            {/* -------------------------------------------------------------- */}
+            {/* Left Card: AI Interviewer Panel                                */}
+            {/* -------------------------------------------------------------- */}
+            <div className="lg:col-span-5 flex flex-col space-y-3">
+              <div className="relative rounded-2xl border border-slate-800 bg-[#070D1E] shadow-2xl overflow-hidden flex-1 min-h-[380px] lg:min-h-[460px] flex flex-col justify-between glow-border-violet group">
+                {/* AI Interviewer Avatar Image with Subtle Atmospheric Lighting */}
+                <div className="absolute inset-0 z-0 overflow-hidden bg-slate-950">
+                  <img
+                    src={aiInterviewerImg}
+                    alt="AI Interviewer"
+                    className="w-full h-full object-cover object-center filter brightness-95 contrast-105 transition duration-700 group-hover:scale-102"
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                    }}
                   />
+                  {/* Subtle Dark Vignette & Neon Rim Glow */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#070D1E] via-transparent to-black/30 pointer-events-none" />
                 </div>
 
-                {/* Custom Input Field (stdin) */}
-                {useCustomInput && (
-                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 animate-in fade-in">
-                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
-                      <span className="font-semibold text-slate-300">Custom Input (stdin):</span>
-                      <span>Passed directly to program during "Run Code"</span>
+                {/* Top-Left Floating Badge: AI Interviewer + Status + Audio Waveform */}
+                <div className="relative z-10 m-3 sm:m-4 flex items-center justify-between pointer-events-auto">
+                  <div className="glass-panel px-3 py-1.5 rounded-full border border-slate-700/60 flex items-center space-x-2.5 shadow-xl bg-slate-950/80 backdrop-blur-md">
+                    <span
+                      className={`w-2.5 h-2.5 rounded-full ${
+                        isSpeaking
+                          ? 'bg-emerald-400 animate-pulse'
+                          : isRecordingAudio || isListening
+                          ? 'bg-rose-400 animate-ping'
+                          : 'bg-emerald-400'
+                      }`}
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-[11px] font-bold text-white tracking-wide leading-none">
+                        AI Interviewer
+                      </span>
+                      <span className="text-[10px] text-slate-300 font-medium leading-tight mt-0.5 flex items-center space-x-1.5">
+                        <span>{getInterviewerStatus()}</span>
+                        {/* Audio Waveform Equalizer Bars (animates when AI is speaking) */}
+                        {isSpeaking && (
+                          <div className="flex items-center space-x-0.5 ml-1">
+                            <span className="w-0.5 h-3 bg-cyan-400 rounded-full animate-soundbar-1" />
+                            <span className="w-0.5 h-3 bg-violet-400 rounded-full animate-soundbar-2" />
+                            <span className="w-0.5 h-3 bg-cyan-400 rounded-full animate-soundbar-3" />
+                            <span className="w-0.5 h-3 bg-indigo-400 rounded-full animate-soundbar-4" />
+                            <span className="w-0.5 h-3 bg-cyan-400 rounded-full animate-soundbar-5" />
+                          </div>
+                        )}
+                      </span>
                     </div>
-                    <textarea
-                      rows={3}
-                      value={customInputText}
-                      onChange={(e) => setCustomInputText(e.target.value)}
-                      placeholder="Enter custom input lines here..."
-                      className="w-full rounded-lg bg-slate-900/90 border border-slate-800 text-slate-200 text-xs font-mono p-3 resize-none focus:outline-none focus:border-indigo-500"
+                  </div>
+
+                  {/* Audio Replay / Speak Prompt Trigger */}
+                  <button
+                    type="button"
+                    onClick={isSpeaking ? handleStopSpeech : handlePlayQuestion}
+                    className="glass-panel p-2 rounded-full border border-slate-700/60 text-slate-200 hover:text-white hover:bg-slate-800/80 transition shadow-lg"
+                    title={isSpeaking ? 'Pause speech audio' : 'Play interviewer audio'}
+                  >
+                    {isSpeaking ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                  </button>
+                </div>
+
+                {/* Candidate Camera PIP Widget (Proctoring Webcam Preview) */}
+                {cameraEnabled && proctoringConsentGiven && sessionId && !isCompleted && (
+                  <div className="relative z-10 self-end m-3 shadow-2xl rounded-xl overflow-hidden border border-slate-700/60 bg-slate-950/90 w-36 sm:w-44 transition">
+                    <ProctoringCameraWidget
+                      onProctoringEvent={handleProctoringEvent}
+                      isSessionActive={!isCompleted && !lastEvaluation}
                     />
                   </div>
                 )}
 
-                {/* Execution & Test Results Panel */}
-                {executionResult && (
-                  <div className="p-4 rounded-xl glass-panel border border-slate-800 bg-slate-950/95 space-y-3 animate-in fade-in">
-                    <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-800/80">
-                      <div className="flex items-center space-x-2.5">
-                        <span className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400">Execution Result:</span>
-                        <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold flex items-center space-x-1 ${
-                          executionResult.status === 'SUCCESS'
-                            ? 'bg-emerald-950 text-emerald-300 border border-emerald-800/80'
-                            : executionResult.status === 'WRONG_ANSWER'
-                            ? 'bg-amber-950 text-amber-300 border border-amber-800/80'
-                            : 'bg-rose-950 text-rose-300 border border-rose-800/80'
-                        }`}>
-                          {executionResult.status === 'SUCCESS' ? (
-                            <>
-                              <CheckCircle className="w-3 h-3 text-emerald-400" />
-                              <span>Accepted</span>
-                            </>
-                          ) : executionResult.status === 'WRONG_ANSWER' ? (
-                            <>
-                              <XCircle className="w-3 h-3 text-amber-400" />
-                              <span>Wrong Answer</span>
-                            </>
-                          ) : (
-                            <>
-                              <AlertCircle className="w-3 h-3 text-rose-400" />
-                              <span>{executionResult.status.replace('_', ' ')}</span>
-                            </>
-                          )}
+                {/* Bottom Video Call Dock: Mute, Camera, Settings, End Interview */}
+                <div className="relative z-10 m-3 sm:m-4 flex items-center justify-center">
+                  <div className="glass-panel px-3 py-2 rounded-2xl border border-slate-700/70 bg-slate-950/85 backdrop-blur-xl flex items-center space-x-2 sm:space-x-3 shadow-2xl">
+                    {/* Mute Toggle */}
+                    <button
+                      type="button"
+                      onClick={handleToggleMute}
+                      id="video-dock-mute-btn"
+                      className={`p-2.5 rounded-xl text-xs font-semibold transition flex flex-col items-center justify-center ${
+                        isMuted
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                          : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60'
+                      }`}
+                      title={isMuted ? 'Unmute AI voice' : 'Mute AI voice'}
+                    >
+                      {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                      <span className="text-[9px] mt-0.5">{isMuted ? 'Muted' : 'Mute'}</span>
+                    </button>
+
+                    {/* Camera Toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setCameraEnabled(!cameraEnabled)}
+                      id="video-dock-camera-btn"
+                      className={`p-2.5 rounded-xl text-xs font-semibold transition flex flex-col items-center justify-center ${
+                        cameraEnabled
+                          ? 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60'
+                          : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                      }`}
+                      title={cameraEnabled ? 'Hide webcam preview' : 'Show webcam preview'}
+                    >
+                      {cameraEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+                      <span className="text-[9px] mt-0.5">Camera</span>
+                    </button>
+
+                    {/* Settings Modal Toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setShowSettingsModal(true)}
+                      id="video-dock-settings-btn"
+                      className="p-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 text-xs font-semibold transition flex flex-col items-center justify-center"
+                      title="Audio and video settings"
+                    >
+                      <Settings className="w-4 h-4" />
+                      <span className="text-[9px] mt-0.5">Settings</span>
+                    </button>
+
+                    {/* Red Call Hangup Button */}
+                    <button
+                      type="button"
+                      onClick={() => setShowEndModal(true)}
+                      id="video-dock-end-call-btn"
+                      className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-lg shadow-rose-600/30 transition flex flex-col items-center justify-center"
+                      title="End interview session"
+                    >
+                      <PhoneOff className="w-4 h-4" />
+                      <span className="text-[9px] mt-0.5">End Interview</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* -------------------------------------------------------------- */}
+            {/* Right Card: Conversational Interview Panel                     */}
+            {/* -------------------------------------------------------------- */}
+            <div className="lg:col-span-7 flex flex-col space-y-3">
+              <div className="rounded-2xl border border-slate-800 bg-[#070D1E] shadow-2xl p-4 sm:p-5 flex-1 flex flex-col justify-between min-h-[380px] lg:min-h-[460px]">
+                {/* Header: Role Title + Topic + Question X of Y + Difficulty + Timer */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center text-violet-400 shadow-md shadow-violet-600/10">
+                      <Layers className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-bold text-white tracking-tight">
+                        {activeQuestion?.interview_title || 'Software Development Engineer Interview'}
+                      </h2>
+                      <div className="text-[11px] text-slate-400 flex items-center space-x-1.5 mt-0.5">
+                        <span>Topic: {activeQuestion?.topic || 'Computer Networks'}</span>
+                        <span className="text-slate-600">•</span>
+                        <span className="text-violet-400 font-semibold font-mono">
+                          Question {activeQuestion?.question_index || 1} of {activeQuestion?.total_questions || 5}
                         </span>
                       </div>
-
-                      <div className="flex items-center space-x-3 text-xs font-mono text-slate-400">
-                        {executionResult.execution_time_ms != null && (
-                          <span>Runtime: <strong className="text-cyan-300">{executionResult.execution_time_ms} ms</strong></span>
-                        )}
-                        {executionResult.total_test_cases > 0 && (
-                          <span className={executionResult.passed_test_cases === executionResult.total_test_cases ? 'text-emerald-400' : 'text-amber-400'}>
-                            Sample Tests: <strong>{executionResult.passed_test_cases} / {executionResult.total_test_cases} Passed</strong>
-                          </span>
-                        )}
-                      </div>
                     </div>
-
-                    {/* Compilation Errors Output */}
-                    {(executionResult.compile_output || (executionResult.status === 'COMPILATION_ERROR' && executionResult.stderr)) && (
-                      <div className="p-3 rounded-lg bg-rose-950/30 border border-rose-900/60 font-mono text-xs text-rose-300 space-y-1">
-                        <div className="font-bold text-rose-400 flex items-center space-x-1">
-                          <AlertCircle className="w-3.5 h-3.5" />
-                          <span>Compiler / Build Error:</span>
-                        </div>
-                        <pre className="whitespace-pre-wrap overflow-x-auto text-[11px] leading-relaxed">
-                          {executionResult.compile_output || executionResult.stderr}
-                        </pre>
-                      </div>
-                    )}
-
-                    {/* Runtime Errors Output */}
-                    {executionResult.status === 'RUNTIME_ERROR' && executionResult.stderr && (
-                      <div className="p-3 rounded-lg bg-rose-950/30 border border-rose-900/60 font-mono text-xs text-rose-300 space-y-1">
-                        <div className="font-bold text-rose-400">Runtime Exception:</div>
-                        <pre className="whitespace-pre-wrap overflow-x-auto text-[11px] leading-relaxed">
-                          {executionResult.stderr}
-                        </pre>
-                      </div>
-                    )}
-
-                    {/* Test Case Tab Selector */}
-                    {executionResult.test_case_results && executionResult.test_case_results.length > 0 && (
-                      <div className="space-y-2">
-                        <div className="flex items-center space-x-2">
-                          {executionResult.test_case_results.map((tc, tcIdx) => (
-                            <button
-                              key={tcIdx}
-                              type="button"
-                              onClick={() => setSelectedTestCaseTab(tcIdx)}
-                              className={`px-3 py-1 rounded text-xs font-mono font-medium flex items-center space-x-1.5 transition ${
-                                selectedTestCaseTab === tcIdx
-                                  ? 'bg-slate-800 text-white border border-slate-700 shadow-sm'
-                                  : 'bg-slate-950/60 text-slate-400 hover:text-slate-200 border border-slate-900'
-                              }`}
-                            >
-                              <span className={`w-2 h-2 rounded-full ${tc.passed ? 'bg-emerald-400' : 'bg-rose-400'}`} />
-                              <span>Case {tc.test_case_index}</span>
-                            </button>
-                          ))}
-                        </div>
-
-                        {/* Selected Test Case Details */}
-                        {executionResult.test_case_results[selectedTestCaseTab] && (
-                          <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800 font-mono text-xs space-y-2">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
-                              <div>
-                                <span className="text-slate-400 block mb-0.5">Input:</span>
-                                <div className="p-2 rounded bg-slate-950 text-slate-200 border border-slate-800">
-                                  {executionResult.test_case_results[selectedTestCaseTab].input_data || '(none)'}
-                                </div>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 block mb-0.5">Expected Output:</span>
-                                <div className="p-2 rounded bg-slate-950 text-emerald-400 border border-slate-800">
-                                  {executionResult.test_case_results[selectedTestCaseTab].expected_output || '(none)'}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div>
-                              <span className="text-slate-400 block mb-0.5 text-[11px]">Program Actual Output:</span>
-                              <div className={`p-2 rounded bg-slate-950 border ${
-                                executionResult.test_case_results[selectedTestCaseTab].passed
-                                  ? 'text-emerald-300 border-slate-800'
-                                  : 'text-rose-300 border-rose-900/60'
-                              }`}>
-                                {executionResult.test_case_results[selectedTestCaseTab].actual_output || '(no stdout output)'}
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Custom Input Output Block */}
-                    {executionResult.total_test_cases === 0 && (
-                      <div className="space-y-2 font-mono text-xs">
-                        {executionResult.stdout && (
-                          <div>
-                            <span className="text-slate-400 block mb-0.5 text-[11px]">Standard Output (stdout):</span>
-                            <pre className="p-2.5 rounded bg-slate-900 border border-slate-800 text-slate-200 whitespace-pre-wrap overflow-x-auto text-[11px]">
-                              {executionResult.stdout}
-                            </pre>
-                          </div>
-                        )}
-                        {executionResult.stderr && executionResult.status !== 'COMPILATION_ERROR' && (
-                          <div>
-                            <span className="text-rose-400 block mb-0.5 text-[11px]">Standard Error (stderr):</span>
-                            <pre className="p-2.5 rounded bg-rose-950/20 border border-rose-900/50 text-rose-300 whitespace-pre-wrap overflow-x-auto text-[11px]">
-                              {executionResult.stderr}
-                            </pre>
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
-                )}
-              </div>
-            ) : (
-              /* Conceptual Response Workspace */
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                  <div className="flex items-center space-x-2">
-                    <label htmlFor="student-answer" className="font-semibold text-slate-300">
-                      Your Technical Response:
-                    </label>
 
-                    <div className="flex items-center flex-wrap gap-2">
-                      {/* Deepgram High-Fidelity Voice Recording Button */}
-                      <button
-                        type="button"
-                        onClick={isRecordingAudio ? stopDeepgramRecording : startDeepgramRecording}
-                        id="record-voice-deepgram-btn"
-                        disabled={submitting || isTranscribingAudio || !!lastEvaluation}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition ${
-                          isRecordingAudio
-                            ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30 animate-pulse'
-                            : 'bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white shadow-md shadow-indigo-600/20'
-                        } disabled:opacity-50 disabled:cursor-not-allowed`}
-                        title={isRecordingAudio ? "Stop recording and transcribe with Deepgram" : "Record your spoken response for AI transcription"}
-                        aria-label={isRecordingAudio ? "Stop recording and transcribe" : "Record spoken answer"}
+                  <div className="flex items-center space-x-2 sm:space-x-3">
+                    {/* Difficulty Badge */}
+                    {getDifficultyBadge(activeQuestion?.difficulty)}
+
+                    {/* Live Countdown Timer */}
+                    <div className="flex items-center space-x-1.5 px-3 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-mono">
+                      <Clock className="w-3.5 h-3.5 text-amber-400" />
+                      <span
+                        className={`font-bold ${
+                          secondsRemaining !== null && secondsRemaining < 300
+                            ? 'text-rose-400 animate-pulse'
+                            : 'text-white'
+                        }`}
                       >
-                        {isRecordingAudio ? (
-                          <>
-                            <Square className="w-3 h-3 fill-current text-white" />
-                            <span>Done Speaking (Transcribe)</span>
-                          </>
-                        ) : isTranscribingAudio ? (
-                          <>
-                            <RotateCcw className="w-3.5 h-3.5 animate-spin text-white" />
-                            <span>Transcribing...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Mic className="w-3.5 h-3.5 text-white" />
-                            <span>Record Voice Answer</span>
-                          </>
-                        )}
-                      </button>
-
-                      {/* Cancel Recording button when active */}
-                      {isRecordingAudio && (
-                        <button
-                          type="button"
-                          onClick={cancelDeepgramRecording}
-                          id="cancel-voice-recording-btn"
-                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
-                          title="Discard recording without transcribing"
-                        >
-                          Cancel
-                        </button>
-                      )}
-
-                      {/* Live Browser Speech Recognition Button (Live Dictation / Fallback) */}
-                      {isSpeechRecognitionSupported && (
-                        <button
-                          type="button"
-                          onClick={handleToggleVoiceInput}
-                          id="toggle-voice-input-btn"
-                          disabled={submitting || isRecordingAudio || isTranscribingAudio || !!lastEvaluation}
-                          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition ${
-                            isListening
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 animate-pulse'
-                              : 'bg-slate-800/80 text-slate-400 border border-slate-700/80 hover:text-slate-200'
-                          } disabled:opacity-50 disabled:cursor-not-allowed`}
-                          title={isListening ? "Stop browser dictation" : "Use browser speech recognition for live typing"}
-                          aria-label={isListening ? "Stop browser dictation" : "Live browser dictation"}
-                        >
-                          {isListening ? (
-                            <>
-                              <MicOff className="w-3 h-3 text-amber-400" />
-                              <span>Stop Browser Dictation</span>
-                            </>
-                          ) : (
-                            <>
-                              <Radio className="w-3 h-3 text-indigo-400" />
-                              <span>Live Browser Dictation</span>
-                            </>
-                          )}
-                        </button>
-                      )}
+                        {formatTime(secondsRemaining)}
+                      </span>
+                      <span className="text-[10px] text-slate-400 hidden sm:inline">Time Remaining</span>
                     </div>
-                  </div>
-
-                  <div className="flex items-center space-x-3 font-mono text-[11px]">
-                    <span className={wordCount >= 25 ? 'text-emerald-400' : 'text-slate-400'}>
-                      {wordCount} words {wordCount >= 25 ? '✓ (Good depth)' : '(25+ recommended)'}
-                    </span>
-                    <span>{answerText.length} characters</span>
                   </div>
                 </div>
 
-                {/* Active Deepgram Recording Status Banner */}
-                {isRecordingAudio && (
-                  <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-900/60 text-xs text-rose-200 flex items-center justify-between gap-3 animate-in fade-in">
-                    <div className="flex items-center space-x-2.5">
-                      <span className="w-3 h-3 rounded-full bg-rose-500 animate-ping shrink-0" />
-                      <div>
-                        <span className="font-bold text-white block">Recording voice answer...</span>
-                        <span className="text-[11px] text-rose-300">Speak clearly. When finished, click "Done Speaking" to transcribe into your response.</span>
+                {/* Conversational Message Thread Container */}
+                <div className="my-4 flex-1 overflow-y-auto space-y-4 pr-1 custom-chat-scrollbar max-h-[360px]">
+                  {/* 1. AI Interviewer Message Bubble */}
+                  <div className="flex items-start space-x-3">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-violet-600 to-indigo-600 flex items-center justify-center text-white shrink-0 shadow-md shadow-violet-600/20 border border-violet-400/30">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 max-w-2xl rounded-2xl rounded-tl-sm bg-[#10192D] border border-slate-800/90 p-4 space-y-2 shadow-lg">
+                      <p className="text-xs text-indigo-300 font-medium">
+                        {getQuestionIntro(activeQuestion?.question_index || 1)}
+                      </p>
+                      <p className="text-xs sm:text-sm text-slate-100 font-medium leading-relaxed">
+                        {activeQuestion?.question_text}
+                      </p>
+
+                      {/* Equalizer Wave / Timestamp Bar */}
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-[10px] text-slate-500">
+                        <div className="flex items-center space-x-1.5">
+                          {isSpeaking && (
+                            <span className="text-cyan-400 flex items-center space-x-1 font-mono">
+                              <Radio className="w-3 h-3 animate-ping" />
+                              <span>Speaking audio...</span>
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={handlePlayQuestion}
+                            className="hover:text-cyan-300 transition flex items-center space-x-1"
+                          >
+                            <Volume2 className="w-3 h-3" />
+                            <span>Listen Again</span>
+                          </button>
+                        </div>
+                        <span className="font-mono">Active Prompt</span>
                       </div>
                     </div>
-                    <div className="flex items-center space-x-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={stopDeepgramRecording}
-                        className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow"
-                      >
-                        Done Speaking
-                      </button>
-                      <button
-                        type="button"
-                        onClick={cancelDeepgramRecording}
-                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
-                      >
-                        Cancel
-                      </button>
+                  </div>
+
+                  {/* 2. Candidate Response Message Bubble */}
+                  <div className="flex items-start justify-end space-x-3">
+                    <div className="flex-1 max-w-xl rounded-2xl rounded-tr-sm bg-[#0E1E38] border border-cyan-900/50 p-4 space-y-1.5 shadow-lg text-right">
+                      {answerText.trim() ? (
+                        <p className="text-xs sm:text-sm text-slate-100 font-sans whitespace-pre-wrap leading-relaxed text-left">
+                          {answerText}
+                        </p>
+                      ) : interimTranscript ? (
+                        <p className="text-xs sm:text-sm text-cyan-300 italic font-sans text-left animate-pulse">
+                          "{interimTranscript}..."
+                        </p>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic text-left">
+                          {activeQuestion?.question_type === 'coding'
+                            ? 'Coding challenge active. Use the Code Editor below to write, compile, and execute your solution.'
+                            : 'Click the microphone below to speak, or switch to typing mode to formulate your response.'}
+                        </p>
+                      )}
+
+                      <div className="flex items-center justify-between pt-1 border-t border-cyan-900/40 text-[10px] text-slate-400">
+                        <span className="font-mono">{wordCount} words recorded</span>
+                        <span className="text-slate-500 font-mono">Candidate Draft</span>
+                      </div>
+                    </div>
+
+                    <div className="w-8 h-8 rounded-full overflow-hidden border border-cyan-500/40 shrink-0 shadow-md">
+                      <img
+                        src={candidateAvatarImg}
+                        alt="Candidate"
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                        }}
+                      />
                     </div>
                   </div>
-                )}
 
-                {/* Deepgram Transcription Processing Banner */}
-                {isTranscribingAudio && (
-                  <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-900/60 text-xs text-indigo-200 flex items-center space-x-2.5 animate-in fade-in">
-                    <RotateCcw className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
-                    <div>
-                      <span className="font-bold text-white block">Transcribing Audio with Deepgram AI...</span>
-                      <span className="text-[11px] text-indigo-300">Processing spoken response using neural speech models. Please wait a moment.</span>
+                  {/* Immediate Feedback Drawer in Conversational Thread */}
+                  {lastEvaluation && (
+                    <div className="p-4 rounded-xl bg-slate-900/90 border border-violet-500/40 space-y-3 animate-in fade-in">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <span className="text-xs font-bold text-white">Evaluation Feedback (Question Complete)</span>
+                        </div>
+                        <div className="px-2.5 py-0.5 rounded-lg bg-violet-950 border border-violet-800 text-xs font-bold text-violet-300 font-mono">
+                          Score: {lastEvaluation.score} / 10
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-300 leading-relaxed">{lastEvaluation.feedback}</p>
+                      <div className="flex justify-end pt-1">
+                        {lastEvaluation.isFinal ? (
+                          <button
+                            onClick={() => setIsCompleted(true)}
+                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5"
+                          >
+                            <Award className="w-3.5 h-3.5" />
+                            <span>View Final Scorecard</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={handleProceedToNextQuestion}
+                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5"
+                          >
+                            <span>Proceed to Next Question</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
-                {/* Active Listening Status Indicator */}
-                {isListening && (
-                  <div className="p-2.5 rounded-lg bg-rose-950/30 border border-rose-900/50 text-xs text-rose-300 flex items-center justify-between gap-2 animate-in fade-in">
-                    <div className="flex items-center space-x-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
-                      <span className="font-medium">Listening... Speak your answer clearly in English. Recognized text is added to your response.</span>
+                {/* ------------------------------------------------------------ */}
+                {/* Bottom Voice & Interaction Bar (Mic button, Type Mode, Submit) */}
+                {/* ------------------------------------------------------------ */}
+                <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                  {/* Status & Mode Switch Row */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2 text-xs font-medium">
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          isRecordingAudio || isListening
+                            ? 'bg-rose-400 animate-ping'
+                            : isTranscribingAudio
+                            ? 'bg-amber-400 animate-pulse'
+                            : 'bg-emerald-400'
+                        }`}
+                      />
+                      <span className="text-slate-300">
+                        {isRecordingAudio
+                          ? 'Listening... Speak your answer'
+                          : isTranscribingAudio
+                          ? 'Transcribing audio with Deepgram...'
+                          : isListening
+                          ? 'Live dictation active...'
+                          : 'Listening ready'}
+                      </span>
                     </div>
+
                     <button
                       type="button"
-                      onClick={stopVoiceRecognition}
-                      className="px-2 py-0.5 rounded bg-rose-900/60 hover:bg-rose-800/60 text-[11px] font-semibold text-rose-200"
+                      onClick={() => setInputMode(inputMode === 'voice' ? 'type' : 'voice')}
+                      id="toggle-input-mode-btn"
+                      className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 text-xs font-medium flex items-center space-x-1.5 transition"
                     >
-                      Done Speaking
-                    </button>
-                  </div>
-                )}
-
-                {/* Interim Transcript Preview */}
-                {interimTranscript && (
-                  <div className="p-2 rounded-lg bg-indigo-950/40 border border-indigo-900/50 text-xs font-mono text-indigo-300 flex items-center space-x-2 animate-in fade-in">
-                    <span className="text-[10px] uppercase font-bold text-indigo-400">Capturing:</span>
-                    <span className="italic">"{interimTranscript}"</span>
-                  </div>
-                )}
-
-                {/* Non-destructive Microphone Error Banner */}
-                {speechError && (
-                  <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-900/50 text-xs text-amber-300 flex items-center justify-between gap-2 animate-in fade-in">
-                    <div className="flex items-center space-x-2">
-                      <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <span>{speechError}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSpeechError(null)}
-                      className="text-amber-400 hover:text-white text-xs px-2 py-0.5 rounded bg-amber-950/50 border border-amber-900/60"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                )}
-
-                <textarea
-                  id="student-answer"
-                  rows={8}
-                  value={answerText}
-                  onChange={(e) => setAnswerText(e.target.value)}
-                  disabled={submitting || !!lastEvaluation}
-                  placeholder="Speak or type your explanation here. You can use voice input above or type manually. Be specific with technical architecture, operational mechanisms, and design trade-offs..."
-                  className="w-full rounded-xl bg-slate-950/80 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-100 placeholder-slate-600 text-xs font-mono p-4 resize-none transition leading-relaxed disabled:opacity-50"
-                />
-
-                {/* Conceptual Submit Action */}
-                {!lastEvaluation && (
-                  <div className="flex items-center justify-between pt-2">
-                    <span className="text-[11px] text-slate-500">
-                      Once submitted, your response will be evaluated immediately by the adaptive rubric engine.
-                    </span>
-                    <button
-                      type="submit"
-                      id="submit-answer-btn"
-                      disabled={submitting || !answerText.trim()}
-                      className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {submitting ? (
+                      {inputMode === 'voice' ? (
                         <>
-                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                          <span>Evaluating Response...</span>
+                          <Keyboard className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Type Instead</span>
                         </>
                       ) : (
                         <>
-                          <span>Submit Response</span>
-                          <Send className="w-3.5 h-3.5" />
+                          <Mic className="w-3.5 h-3.5 text-violet-400" />
+                          <span>Voice Mode</span>
                         </>
                       )}
                     </button>
                   </div>
-                )}
-              </>
-            )}
-          </div>
-        </form>
 
-        {/* Immediate Evaluation Feedback Drawer */}
-        {lastEvaluation && (
-          <div className="p-6 rounded-2xl glass-panel border border-indigo-500/40 bg-slate-950/90 space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
+                  {/* Speech Error Alert Banner */}
+                  {speechError && (
+                    <div
+                      className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/50 text-rose-200 text-xs flex items-start justify-between space-x-2 animate-in fade-in"
+                      role="alert"
+                    >
+                      <div className="flex items-start space-x-2">
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                        <span className="leading-relaxed">{speechError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSpeechError(null)}
+                        className="text-rose-400 hover:text-white transition p-0.5 rounded shrink-0"
+                        title="Dismiss alert"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Prominent Voice Microphone Trigger */}
+                  {inputMode === 'voice' && !lastEvaluation && (
+                    <div className="flex flex-col items-center justify-center py-2 space-y-2">
+                      <div className="flex items-center space-x-4 sm:space-x-6">
+                        {/* Left Sound Wave Bars */}
+                        <div className="flex items-center space-x-1">
+                          <span
+                            className={`w-1 rounded-full bg-cyan-400 ${
+                              isRecordingAudio ? 'animate-soundbar-1 h-5' : 'h-2 opacity-40'
+                            }`}
+                          />
+                          <span
+                            className={`w-1 rounded-full bg-violet-400 ${
+                              isRecordingAudio ? 'animate-soundbar-2 h-6' : 'h-3 opacity-40'
+                            }`}
+                          />
+                          <span
+                            className={`w-1 rounded-full bg-cyan-400 ${
+                              isRecordingAudio ? 'animate-soundbar-3 h-7' : 'h-4 opacity-40'
+                            }`}
+                          />
+                          <span
+                            className={`w-1 rounded-full bg-indigo-400 ${
+                              isRecordingAudio ? 'animate-soundbar-4 h-5' : 'h-2 opacity-40'
+                            }`}
+                          />
+                        </div>
+
+                        {/* Large Circular Glowing Microphone Button */}
+                        <button
+                          type="button"
+                          onClick={isRecordingAudio ? stopDeepgramRecording : startDeepgramRecording}
+                          disabled={submitting || isTranscribingAudio || !!lastEvaluation}
+                          id="primary-microphone-action-btn"
+                          className={`w-16 h-16 sm:w-18 sm:h-18 rounded-full flex items-center justify-center transition shadow-2xl relative ${
+                            isRecordingAudio
+                              ? 'bg-gradient-to-r from-rose-600 to-red-600 text-white animate-mic-pulse'
+                              : 'bg-gradient-to-tr from-violet-600 via-indigo-600 to-cyan-500 text-white hover:scale-105 active:scale-95 shadow-violet-600/30'
+                          } disabled:opacity-50`}
+                          title={isRecordingAudio ? 'Click to stop speaking' : 'Click to start recording voice response'}
+                        >
+                          {isRecordingAudio ? (
+                            <Square className="w-6 h-6 fill-current text-white" />
+                          ) : isTranscribingAudio ? (
+                            <RotateCcw className="w-6 h-6 animate-spin text-white" />
+                          ) : (
+                            <Mic className="w-7 h-7 text-white" />
+                          )}
+                        </button>
+
+                        {/* Right Sound Wave Bars */}
+                        <div className="flex items-center space-x-1">
+                          <span
+                            className={`w-1 rounded-full bg-indigo-400 ${
+                              isRecordingAudio ? 'animate-soundbar-4 h-5' : 'h-2 opacity-40'
+                            }`}
+                          />
+                          <span
+                            className={`w-1 rounded-full bg-cyan-400 ${
+                              isRecordingAudio ? 'animate-soundbar-3 h-7' : 'h-4 opacity-40'
+                            }`}
+                          />
+                          <span
+                            className={`w-1 rounded-full bg-violet-400 ${
+                              isRecordingAudio ? 'animate-soundbar-2 h-6' : 'h-3 opacity-40'
+                            }`}
+                          />
+                          <span
+                            className={`w-1 rounded-full bg-cyan-400 ${
+                              isRecordingAudio ? 'animate-soundbar-1 h-5' : 'h-2 opacity-40'
+                            }`}
+                          />
+                        </div>
+                      </div>
+
+                      <span className="text-[11px] text-slate-400 font-medium">
+                        {isRecordingAudio
+                          ? 'Recording live voice... Click button when done speaking'
+                          : isTranscribingAudio
+                          ? 'Transcribing audio with Deepgram...'
+                          : 'Click to speak or start talking'}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Candidate Technical Response Editor & Submit Action */}
+                  {!lastEvaluation && (
+                    <div className="space-y-2 animate-in fade-in">
+                      <div className="flex items-center justify-between">
+                        <label
+                          htmlFor="interview-answer-editor"
+                          className="text-[11px] font-semibold text-slate-300 flex items-center space-x-1.5"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Candidate Technical Response Editor</span>
+                          {isTranscribingAudio && (
+                            <span className="text-[10px] text-cyan-400 flex items-center space-x-1 font-mono ml-2">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              <span>Transcribing audio...</span>
+                            </span>
+                          )}
+                        </label>
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {inputMode === 'voice' ? 'Voice transcribed / Editable' : 'Keyboard typing'}
+                        </span>
+                      </div>
+
+                      <textarea
+                        id="interview-answer-editor"
+                        rows={3}
+                        value={answerText}
+                        onChange={(e) => setAnswerText(e.target.value)}
+                        disabled={submitting || !!lastEvaluation || isTranscribingAudio}
+                        placeholder={
+                          isRecordingAudio
+                            ? "Listening... Speak your answer now. Click the microphone button when finished."
+                            : isTranscribingAudio
+                            ? "Transcribing your spoken answer via Deepgram STT..."
+                            : "Your spoken response transcript or typed answer will appear here. You can edit this text freely before submitting."
+                        }
+                        className="w-full rounded-xl bg-slate-950/90 border border-slate-800 text-slate-100 placeholder-slate-600 text-xs font-mono p-3 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition leading-relaxed resize-none disabled:opacity-60"
+                      />
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-slate-400 font-mono">
+                          {wordCount} words {wordCount >= 25 ? '✓ (Adequate depth)' : '(25+ words recommended)'}
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={handleSubmitAnswer}
+                          disabled={submitting || !answerText.trim() || !!lastEvaluation || isTranscribingAudio}
+                          id="submit-conversational-answer-btn"
+                          className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center space-x-1.5 disabled:opacity-50"
+                        >
+                          {submitting ? (
+                            <>
+                              <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                              <span>Evaluating...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Submit Answer</span>
+                              <Send className="w-3.5 h-3.5" />
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ---------------------------------------------------------------- */}
+          {/* Coding Challenge View (Rendered when Coding Tab is Selected)      */}
+          {/* ---------------------------------------------------------------- */}
+          {(activeTab === 'code' || activeQuestion?.question_type === 'coding') && (
+            <div className="glass-panel p-4 sm:p-5 rounded-2xl border border-slate-800 space-y-4 animate-in fade-in">
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
                 <div className="flex items-center space-x-2">
-                  <span className="text-xs font-bold text-emerald-400 flex items-center space-x-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Response Evaluated</span>
+                  <Terminal className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs font-bold text-white uppercase tracking-wider">
+                    Isolated Code Execution Sandbox
                   </span>
                   <span className="text-slate-600">•</span>
-                  <span className="text-xs text-slate-400">
-                    Question {activeQuestion?.question_index} Complete
-                  </span>
+                  <span className="text-xs text-slate-400 font-mono">Language:</span>
+                  {['Python', 'Java', 'C', 'C++'].map((lang) => (
+                    <button
+                      key={lang}
+                      type="button"
+                      onClick={() => handleLanguageSelect(lang)}
+                      disabled={submitting || runningCode}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold transition ${
+                        selectedLanguage === lang
+                          ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/30'
+                          : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                      }`}
+                    >
+                      {lang}
+                    </button>
+                  ))}
                 </div>
-                <p className="text-xs text-slate-200 leading-relaxed font-medium">
-                  {lastEvaluation.feedback}
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleRunCode}
+                    disabled={runningCode || submitting || !answerText.trim()}
+                    id="sandbox-run-code-btn"
+                    className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-800/60 text-xs font-semibold flex items-center space-x-1.5 transition disabled:opacity-50"
+                  >
+                    {runningCode ? (
+                      <>
+                        <RotateCcw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                        <span>Running Sandbox...</span>
+                      </>
+                    ) : (
+                      <>
+                        <PlayCircle className="w-4 h-4 text-cyan-400" />
+                        <span>Run Code</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSubmitAnswer}
+                    disabled={submitting || runningCode || !answerText.trim()}
+                    id="sandbox-submit-solution-btn"
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
+                  >
+                    {submitting ? (
+                      <>
+                        <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Evaluating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Submit Solution</span>
+                        <Send className="w-3.5 h-3.5" />
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Code Editor Textarea */}
+              <div className="relative rounded-xl border border-slate-800 overflow-hidden bg-slate-950 shadow-inner">
+                <textarea
+                  rows={10}
+                  value={answerText}
+                  onChange={(e) => setAnswerText(e.target.value)}
+                  onKeyDown={handleEditorKeyDown}
+                  disabled={submitting || !!lastEvaluation}
+                  placeholder={`Write your ${selectedLanguage} solution here...`}
+                  className="w-full bg-slate-950 text-slate-100 placeholder-slate-600 text-xs font-mono p-4 resize-y outline-none leading-relaxed focus:ring-1 focus:ring-cyan-500 disabled:opacity-50"
+                />
+              </div>
+
+              {/* Sandbox Output & Test Results */}
+              {executionResult && (
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono space-y-2">
+                  <div className="flex items-center justify-between text-slate-300 font-bold border-b border-slate-800 pb-1.5">
+                    <span>Status: {executionResult.status}</span>
+                    {executionResult.execution_time_ms != null && (
+                      <span className="text-cyan-400">Runtime: {executionResult.execution_time_ms} ms</span>
+                    )}
+                  </div>
+                  {executionResult.stdout && (
+                    <pre className="p-2 bg-slate-900 rounded text-slate-200 overflow-x-auto text-[11px]">
+                      {executionResult.stdout}
+                    </pre>
+                  )}
+                  {executionResult.stderr && (
+                    <pre className="p-2 bg-rose-950/40 rounded text-rose-300 overflow-x-auto text-[11px]">
+                      {executionResult.stderr}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ================================================================ */}
+          {/* Bottom Row: Question Stepper Progress (Left) & Tips Card (Right) */}
+          {/* ================================================================ */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            {/* Question Stepper Progress Card */}
+            <div className="lg:col-span-8 rounded-2xl border border-slate-800 bg-[#070D1E] shadow-xl p-4 flex items-center justify-between">
+              <div className="flex items-center justify-between w-full relative">
+                {Array.from({ length: activeQuestion?.total_questions || 5 }).map((_, idx) => {
+                  const stepNum = idx + 1;
+                  const isCurrent = stepNum === (activeQuestion?.question_index || 1);
+                  const isPast = stepNum < (activeQuestion?.question_index || 1);
+
+                  return (
+                    <div key={stepNum} className="flex-1 flex flex-col items-center relative z-10">
+                      <div
+                        className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition shadow-md ${
+                          isCurrent
+                            ? 'bg-gradient-to-tr from-violet-600 to-indigo-600 text-white ring-4 ring-violet-500/20'
+                            : isPast
+                            ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-slate-900 text-slate-500 border border-slate-800'
+                        }`}
+                      >
+                        {isPast ? <Check className="w-4 h-4 text-emerald-400" /> : stepNum}
+                      </div>
+                      <span
+                        className={`text-[10px] mt-1.5 font-medium whitespace-nowrap ${
+                          isCurrent ? 'text-violet-300 font-bold' : isPast ? 'text-slate-400' : 'text-slate-600'
+                        }`}
+                      >
+                        {isCurrent ? `Question ${stepNum} (current)` : `Question ${stepNum}`}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Right Card: Interview Tips */}
+            <div className="lg:col-span-4 rounded-2xl border border-slate-800 bg-[#070D1E] shadow-xl p-4 flex items-center space-x-3.5 group hover:border-amber-500/40 transition">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <Lightbulb className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h4 className="text-xs font-bold text-white">Interview Tips</h4>
+                <p className="text-[11px] text-slate-400 leading-snug">
+                  Be clear, structured and provide examples where applicable.
                 </p>
               </div>
-
-              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-center shrink-0">
-                <div className="text-[10px] text-slate-400 uppercase font-semibold">Awarded</div>
-                <div className="text-lg font-bold text-indigo-400 font-mono">
-                  {lastEvaluation.score} <span className="text-xs text-slate-500 font-normal">/ 10</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Strengths & Improvements */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              {lastEvaluation.strengths && lastEvaluation.strengths.length > 0 && (
-                <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-900/30 text-emerald-300">
-                  <strong className="block text-emerald-400 mb-1">Strengths Noted:</strong>
-                  {lastEvaluation.strengths.join(' ')}
-                </div>
-              )}
-              {lastEvaluation.improvements && lastEvaluation.improvements.length > 0 && (
-                <div className="p-3 rounded-lg bg-amber-950/20 border border-amber-900/30 text-amber-300">
-                  <strong className="block text-amber-400 mb-1">Growth Recommendation:</strong>
-                  {lastEvaluation.improvements.join(' ')}
-                </div>
-              )}
-            </div>
-
-            {/* Adaptive Rationale */}
-            {lastEvaluation.difficultyRationale && (
-              <div className="p-3 rounded-lg bg-indigo-950/30 border border-indigo-900/40 text-xs font-mono text-indigo-300 flex items-center space-x-2">
-                <Zap className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>
-                  <strong>Adaptive Transition: </strong>
-                  {lastEvaluation.difficultyRationale}
-                </span>
-              </div>
-            )}
-
-            {/* Next Step Action */}
-            <div className="flex justify-end pt-2">
-              {lastEvaluation.isFinal ? (
-                <button
-                  onClick={() => setIsCompleted(true)}
-                  id="view-final-scorecard-btn"
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 transition flex items-center space-x-2"
-                >
-                  <Award className="w-4 h-4" />
-                  <span>View Final Evaluation Scorecard</span>
-                </button>
-              ) : (
-                <button
-                  onClick={handleProceedToNextQuestion}
-                  id="next-question-btn"
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-2"
-                >
-                  <span>Proceed to Next Question</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              )}
+              <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-amber-400 transition" />
             </div>
           </div>
-        )}
-      </main>
+        </main>
+      </div>
+
+      {/* ==================================================================== */}
+      {/* End Interview Confirmation Modal                                     */}
+      {/* ==================================================================== */}
+      {showEndModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-md rounded-2xl bg-[#09101D] border border-slate-800 p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-600/20 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                <PhoneOff className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">End Interview Session?</h3>
+                <p className="text-xs text-slate-400">Your answered responses have been recorded.</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Are you sure you want to exit the interview room? If you end now, your scorecard will be computed based on the answers submitted so far.
+            </p>
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowEndModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
+              >
+                Continue Interview
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleStopSpeech();
+                  stopVoiceRecognition();
+                  stopMediaStreamTracks();
+                  navigate('/dashboard');
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-600/20 transition"
+              >
+                Confirm & Exit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* Settings Modal                                                       */}
+      {/* ==================================================================== */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-md rounded-2xl bg-[#09101D] border border-slate-800 p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center space-x-2.5">
+                <Settings className="w-5 h-5 text-violet-400" />
+                <h3 className="text-sm font-bold text-white">Audio & Video Settings</h3>
+              </div>
+              <button onClick={() => setShowSettingsModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800">
+                <div>
+                  <div className="font-semibold text-white">Deepgram Text-to-Speech</div>
+                  <div className="text-slate-400 text-[11px]">Synthesizes questions using neural audio</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handlePlayQuestion}
+                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-[11px]"
+                >
+                  Test Audio
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800">
+                <div>
+                  <div className="font-semibold text-white">Proctoring Camera Preview</div>
+                  <div className="text-slate-400 text-[11px]">Level 1 face monitoring preview</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCameraEnabled(!cameraEnabled)}
+                  className={`px-3 py-1.5 rounded-lg font-medium text-[11px] ${
+                    cameraEnabled ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  {cameraEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSettingsModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* Student Personal Notes Scratchpad Modal                              */}
+      {/* ==================================================================== */}
+      {showNotesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-lg rounded-2xl bg-[#09101D] border border-slate-800 p-6 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center space-x-2.5">
+                <FileText className="w-5 h-5 text-cyan-400" />
+                <h3 className="text-sm font-bold text-white">Personal Interview Scratchpad</h3>
+              </div>
+              <button onClick={() => setShowNotesModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-400">
+              Jot down quick thoughts, formulas, or pseudocode while reasoning through the problem. Notes remain private on this device.
+            </p>
+            <textarea
+              rows={8}
+              value={candidateNotes}
+              onChange={(e) => setCandidateNotes(e.target.value)}
+              placeholder="Type your notes here..."
+              className="w-full rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono p-3 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+            />
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShowNotesModal(false)}
+                className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold"
+              >
+                Save & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* Question Guide Modal                                                 */}
+      {/* ==================================================================== */}
+      {showGuideModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-lg rounded-2xl bg-[#09101D] border border-slate-800 p-6 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center space-x-2.5">
+                <BookOpen className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-sm font-bold text-white">Interview Assessment Guide</h3>
+              </div>
+              <button onClick={() => setShowGuideModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-2 text-xs text-slate-300">
+              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                <strong className="text-indigo-400 block mb-1">Conceptual Questions:</strong>
+                Explain protocol mechanics, packet sequence numbers, handshake stages, and architectural trade-offs. Aim for depth and structured terminology.
+              </div>
+              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                <strong className="text-cyan-400 block mb-1">Coding Questions:</strong>
+                Read input from standard input (stdin) and print output to standard output (stdout). Test against sample cases before submitting your solution.
+              </div>
+              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                <strong className="text-amber-400 block mb-1">Adaptive Progression:</strong>
+                Scoring higher on initial questions triggers higher-tier prompts, earning higher placement percentile ratings.
+              </div>
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShowGuideModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold"
+              >
+                Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

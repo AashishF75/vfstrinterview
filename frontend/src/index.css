@@ -61,3 +61,62 @@
   border: 1px solid rgba(56, 189, 248, 0.22);
   box-shadow: 0 0 25px -8px rgba(56, 189, 248, 0.2);
 }
+
+.glow-border-violet {
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  box-shadow: 0 0 30px -8px rgba(139, 92, 246, 0.25);
+}
+
+/* Audio Equalizer & Sound Wave Animation */
+@keyframes soundbar {
+  0%, 100% {
+    height: 4px;
+    opacity: 0.4;
+  }
+  50% {
+    height: 22px;
+    opacity: 1;
+  }
+}
+
+.animate-soundbar-1 { animation: soundbar 0.8s ease-in-out infinite 0.1s; }
+.animate-soundbar-2 { animation: soundbar 0.7s ease-in-out infinite 0.25s; }
+.animate-soundbar-3 { animation: soundbar 0.9s ease-in-out infinite 0.15s; }
+.animate-soundbar-4 { animation: soundbar 0.65s ease-in-out infinite 0.3s; }
+.animate-soundbar-5 { animation: soundbar 0.85s ease-in-out infinite 0.05s; }
+
+/* Radiant Microphone Pulse Ring */
+@keyframes pulseRing {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.6);
+  }
+  70% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 16px rgba(139, 92, 246, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+  }
+}
+
+.animate-mic-pulse {
+  animation: pulseRing 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Custom dark scrollbar */
+.custom-chat-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-chat-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 4px;
+}
+.custom-chat-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+}
+.custom-chat-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.6);
+}

@@ -681,7 +681,15 @@ export const getVoiceStatus = async (sessionId) => {
 export const transcribeInterviewAudio = async (sessionId, audioBlob) => {
   try {
     const formData = new FormData();
-    const filename = audioBlob.type?.includes('wav') ? 'recording.wav' : 'recording.webm';
+    let ext = 'webm';
+    if (audioBlob.type?.includes('wav')) {
+      ext = 'wav';
+    } else if (audioBlob.type?.includes('mp4') || audioBlob.type?.includes('m4a')) {
+      ext = 'mp4';
+    } else if (audioBlob.type?.includes('ogg') || audioBlob.type?.includes('opus')) {
+      ext = 'ogg';
+    }
+    const filename = `recording.${ext}`;
     formData.append('file', audioBlob, filename);
 
     const response = await apiClient.post(
@@ -689,7 +697,7 @@ export const transcribeInterviewAudio = async (sessionId, audioBlob) => {
       formData,
       {
         headers: {
-          'Content-Type': 'multipart/form-data',
+          'Content-Type': undefined,
         },
         timeout: 20000,
       }
