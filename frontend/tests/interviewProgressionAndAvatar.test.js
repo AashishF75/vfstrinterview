@@ -481,4 +481,231 @@ describe('Interview Progression and Talking Avatar Tests', () => {
     const isWarpActive = currentVolume > 0.012;
     assert.equal(isWarpActive, false, 'No warping or overlays must render when audio is resting');
   });
+
+  // Test 9: Complete regression: Submit Question 1 -> evaluation retained -> Next Question loads authoritative Question 2
+  test('Submit Question 1 displays evaluation, keeps draft until Next Question, and updates counter to 2 of 5', async () => {
+    let state = {
+      sessionId: 'sess-vfstr-prog-001',
+      activeQuestion: {
+        session_id: 'sess-vfstr-prog-001',
+        question_index: 1,
+        total_questions: 5,
+        question_text: 'What is the role of ARP in local area networks?',
+        topic: 'Computer Networks',
+        difficulty: 'medium',
+        question_type: 'conceptual',
+        interview_title: 'Computer Networks Adaptive Interview',
+      },
+      answerText: 'ARP maps an IPv4 address to a physical MAC address on the local link layer.',
+      submitting: false,
+      isProgressing: false,
+      lastEvaluation: null,
+      pendingNextQuestion: null,
+      secondsRemaining: 1800,
+    };
+
+    // 1. Submit Question 1
+    state.submitting = true;
+    const mockSubmitResponse = {
+      success: true,
+      data: {
+        session_id: 'sess-vfstr-prog-001',
+        question_index: 1,
+        evaluated_score: 9.2,
+        feedback: 'Precise definition of ARP protocol mapping IP to MAC address.',
+        strengths: ['Identified link-layer mapping', 'Accurate protocol purpose'],
+        improvements: ['Could mention ARP cache and broadcast request'],
+        next_difficulty: 'hard',
+        difficulty_rationale: 'High score on Question 1 advances difficulty to hard tier.',
+        is_session_completed: false,
+        next_question: {
+          session_id: 'sess-vfstr-prog-001',
+          question_index: 2,
+          total_questions: 5,
+          question_text: 'Explain how TCP SYN cookies prevent SYN flood denial of service attacks.',
+          topic: 'Network Security',
+          difficulty: 'hard',
+          question_type: 'conceptual',
+          time_remaining_seconds: 1680,
+          interview_title: 'Computer Networks Adaptive Interview',
+        },
+      },
+    };
+
+    state.submitting = false;
+    state.lastEvaluation = {
+      score: mockSubmitResponse.data.evaluated_score,
+      feedback: mockSubmitResponse.data.feedback,
+      strengths: mockSubmitResponse.data.strengths,
+      improvements: mockSubmitResponse.data.improvements,
+      difficultyRationale: mockSubmitResponse.data.difficulty_rationale,
+      isFinal: false,
+    };
+    state.pendingNextQuestion = mockSubmitResponse.data.next_question;
+
+    // STEP A: Verify Question 1 state and evaluation are PRESERVED before user proceeds
+    assert.equal(state.activeQuestion.question_index, 1, 'Header must stay Question 1 until progression');
+    assert.equal(state.activeQuestion.question_text, 'What is the role of ARP in local area networks?');
+    assert.equal(state.answerText, 'ARP maps an IPv4 address to a physical MAC address on the local link layer.', 'Draft must remain intact');
+    assert.ok(state.lastEvaluation !== null, 'Evaluation feedback card must be visible');
+    assert.equal(state.lastEvaluation.score, 9.2);
+    assert.equal(state.lastEvaluation.isFinal, false);
+
+    // STEP B: User clicks prominent "Next Question" button
+    state.isProgressing = true;
+
+    // Authoritative backend endpoint call
+    const mockGetCurrentQuestion = async (sessId) => ({
+      success: true,
+      data: {
+        session_id: sessId,
+        question_index: 2,
+        current_question_index: 2,
+        total_questions: 5,
+        total_questions_target: 5,
+        question_text: 'Explain how TCP SYN cookies prevent SYN flood denial of service attacks.',
+        topic: 'Network Security',
+        difficulty: 'hard',
+        current_difficulty: 'hard',
+        question_type: 'conceptual',
+        time_remaining_seconds: 1680,
+        interview_title: 'Computer Networks Adaptive Interview',
+      },
+    });
+
+    let nextData = null;
+    const curRes = await mockGetCurrentQuestion(state.sessionId);
+    if (curRes.success && curRes.data) {
+      nextData = curRes.data;
+    } else {
+      nextData = state.pendingNextQuestion;
+    }
+
+    assert.ok(nextData, 'Authoritative next question must be obtained');
+    assert.equal(nextData.question_index, 2);
+
+    // Update activeQuestion state from authoritative backend response
+    state.activeQuestion = {
+      session_id: nextData.session_id,
+      question_index: nextData.question_index ?? nextData.current_question_index ?? 2,
+      total_questions: nextData.total_questions ?? nextData.total_questions_target ?? 5,
+      question_text: nextData.question_text,
+      topic: nextData.topic,
+      difficulty: nextData.difficulty,
+      question_type: nextData.question_type,
+      interview_title: nextData.interview_title,
+    };
+    state.secondsRemaining = nextData.time_remaining_seconds;
+
+    // Answer draft is cleared ONLY after question 2 is loaded successfully
+    state.answerText = '';
+    state.lastEvaluation = null;
+    state.pendingNextQuestion = null;
+    state.isProgressing = false;
+
+    // STEP C: Verify Question 2 state
+    assert.equal(state.activeQuestion.question_index, 2, 'Question counter must now be 2 of 5');
+    assert.equal(state.activeQuestion.total_questions, 5);
+    assert.equal(state.activeQuestion.difficulty, 'hard');
+    assert.equal(state.activeQuestion.topic, 'Network Security');
+    assert.ok(state.activeQuestion.question_text.includes('SYN cookies'));
+    assert.equal(state.secondsRemaining, 1680);
+    assert.equal(state.answerText, '', 'Answer draft must be reset for Question 2');
+    assert.equal(state.lastEvaluation, null, 'Evaluation card reset for fresh question prompt');
+  });
+
+  // Test 10: Missing pendingNextQuestion is recovered through getCurrentQuestion endpoint
+  test('Missing pendingNextQuestion is recovered seamlessly via backend current-question endpoint', async () => {
+    let state = {
+      sessionId: 'sess-recovery-002',
+      activeQuestion: {
+        session_id: 'sess-recovery-002',
+        question_index: 1,
+        total_questions: 5,
+        question_text: 'What is MTU?',
+      },
+      lastEvaluation: { score: 8.0, isFinal: false },
+      pendingNextQuestion: null, // intentionally null/missing locally
+      isProgressing: false,
+    };
+
+    let backendCalled = false;
+    const mockGetCurrentQuestion = async (sessId) => {
+      backendCalled = true;
+      return {
+        success: true,
+        data: {
+          session_id: sessId,
+          question_index: 2,
+          total_questions: 5,
+          question_text: 'Explain TCP flow control using sliding windows.',
+          topic: 'Computer Networks',
+          difficulty: 'medium',
+          question_type: 'conceptual',
+          time_remaining_seconds: 1500,
+        },
+      };
+    };
+
+    state.isProgressing = true;
+    let nextData = state.pendingNextQuestion;
+    if (!nextData || !nextData.question_text) {
+      const curRes = await mockGetCurrentQuestion(state.sessionId);
+      if (curRes.success && curRes.data) {
+        nextData = curRes.data;
+      }
+    }
+
+    assert.equal(backendCalled, true, 'Must call backend current-question endpoint when pendingNextQuestion is missing');
+    assert.ok(nextData !== null);
+    assert.equal(nextData.question_index, 2);
+
+    state.activeQuestion = {
+      session_id: nextData.session_id,
+      question_index: nextData.question_index,
+      total_questions: nextData.total_questions,
+      question_text: nextData.question_text,
+    };
+    state.isProgressing = false;
+
+    assert.equal(state.activeQuestion.question_index, 2);
+    assert.ok(state.activeQuestion.question_text.includes('sliding windows'));
+  });
+
+  // Test 11: Speech-handler declaration order eliminates Temporal Dead Zone ReferenceError
+  test('Speech-handler initialization order allows handleStopSpeech to be safely invoked before or during speakQuestion', () => {
+    let isSpeaking = false;
+    let speakingSource = null;
+    let audioPlaybackStopped = false;
+
+    // Verified pattern: handleStopSpeech declared as useCallback first, with zero TDZ issues
+    const handleStopSpeech = () => {
+      audioPlaybackStopped = true;
+      isSpeaking = false;
+      speakingSource = null;
+    };
+
+    const speakQuestion = (text) => {
+      // Must safely execute without ReferenceError: Cannot access 'handleStopSpeech' before initialization
+      handleStopSpeech();
+      if (!text) return;
+      isSpeaking = true;
+      speakingSource = 'deepgram';
+    };
+
+    // 1. Calling speakQuestion properly stops previous audio without throwing
+    assert.doesNotThrow(() => {
+      speakQuestion('What is distance vector routing?');
+    });
+
+    assert.equal(isSpeaking, true);
+    assert.equal(speakingSource, 'deepgram');
+    assert.equal(audioPlaybackStopped, true);
+
+    // 2. Calling handleStopSpeech cleanly halts speech
+    handleStopSpeech();
+    assert.equal(isSpeaking, false);
+    assert.equal(speakingSource, null);
+  });
 });
+

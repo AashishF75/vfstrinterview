@@ -375,6 +375,31 @@ export default function InterviewRoom() {
     [isMuted, getEnglishVoice]
   );
 
+  // Speech cancellation handler - declared before speakQuestion to eliminate TDZ reference errors
+  const handleStopSpeech = useCallback(() => {
+    if (deepgramAudioRef.current) {
+      try {
+        deepgramAudioRef.current.pause();
+        deepgramAudioRef.current.currentTime = 0;
+      } catch {}
+      deepgramAudioRef.current = null;
+    }
+    setDeepgramAudioInstance(null);
+    if (audioPlaybackUrlRef.current) {
+      try {
+        URL.revokeObjectURL(audioPlaybackUrlRef.current);
+      } catch {}
+      audioPlaybackUrlRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+    }
+    setIsSpeaking(false);
+    setSpeakingSource(null);
+  }, []);
+
   // Master question speaker: Prefers Deepgram TTS (Aura), seamlessly falls back to browser speechSynthesis
   const speakQuestion = useCallback(
     async (text) => {
@@ -437,7 +462,7 @@ export default function InterviewRoom() {
 
       speakQuestionBrowser(text);
     },
-    [sessionId, isMuted, speakQuestionBrowser]
+    [sessionId, isMuted, speakQuestionBrowser, handleStopSpeech]
   );
 
   // Auto-speak newly active question once
@@ -456,30 +481,6 @@ export default function InterviewRoom() {
     if (!activeQuestion?.question_text) return;
     setSpeechBlocked(false);
     speakQuestion(activeQuestion.question_text);
-  };
-
-  const handleStopSpeech = () => {
-    if (deepgramAudioRef.current) {
-      try {
-        deepgramAudioRef.current.pause();
-        deepgramAudioRef.current.currentTime = 0;
-      } catch {}
-      deepgramAudioRef.current = null;
-    }
-    setDeepgramAudioInstance(null);
-    if (audioPlaybackUrlRef.current) {
-      try {
-        URL.revokeObjectURL(audioPlaybackUrlRef.current);
-      } catch {}
-      audioPlaybackUrlRef.current = null;
-    }
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {}
-    }
-    setIsSpeaking(false);
-    setSpeakingSource(null);
   };
 
   const handleToggleMute = () => {
@@ -1095,8 +1096,20 @@ export default function InterviewRoom() {
         try {
           const curRes = await getCurrentQuestion(sessionId);
           if (curRes.success && curRes.data) {
+            const isComp = curRes.data.is_session_completed || curRes.data.session_status === 'completed';
             const nextIdx = curRes.data.question_index ?? curRes.data.current_question_index;
-            if (nextIdx > (activeQuestion?.question_index || 1)) {
+            if (isComp) {
+              setLastEvaluation({
+                score: 8.0,
+                feedback: 'All questions have been completed and recorded on the server. Ready to view your final scorecard.',
+                strengths: ['Interview completed on server'],
+                improvements: [],
+                difficultyRationale: 'Session synchronized with server completion.',
+                codeExecutionSummary: null,
+                isFinal: true,
+              });
+              return;
+            } else if (nextIdx > (activeQuestion?.question_index || 1) || curRes.data.question_text !== activeQuestion?.question_text) {
               setPendingNextQuestion(curRes.data);
               setLastEvaluation({
                 score: 8.0,
@@ -1166,16 +1179,23 @@ export default function InterviewRoom() {
     setIsProgressing(true);
 
     try {
-      // 1. Resolve next question data (prefer pendingNextQuestion or fetch live from backend)
-      let nextData = pendingNextQuestion;
-
-      if (!nextData || !nextData.question_text) {
+      // 1. Authoritative resolution: fetch live from backend current-question endpoint, with pendingNextQuestion as fallback
+      let nextData = null;
+      try {
         const curRes = await getCurrentQuestion(sessionId);
-        if (curRes.success && curRes.data) {
+        if (curRes && curRes.success && curRes.data) {
           nextData = curRes.data;
-        } else {
-          throw new Error(curRes.error || 'Failed to retrieve next question from server.');
         }
+      } catch {
+        // Fallback to locally cached pendingNextQuestion if network fetch encountered an issue
+      }
+
+      if (!nextData || (!nextData.question_text && !nextData.question && !nextData.active_question?.question_text)) {
+        nextData = pendingNextQuestion;
+      }
+
+      if (!nextData) {
+        throw new Error('Failed to retrieve next question from server. Please retry.');
       }
 
       // Check if session reached final completion
@@ -1204,6 +1224,7 @@ export default function InterviewRoom() {
 
       const nextDiff =
         nextData.difficulty ||
+        nextData.current_difficulty ||
         nextData.active_question?.difficulty ||
         'medium';
 
@@ -1215,11 +1236,13 @@ export default function InterviewRoom() {
       const nextIndex =
         nextData.question_index ??
         nextData.current_question_index ??
+        nextData.active_question?.question_index ??
         (activeQuestion?.question_index ? activeQuestion.question_index + 1 : 2);
 
       const nextTotal =
         nextData.total_questions ??
         nextData.total_questions_target ??
+        nextData.active_question?.total_questions ??
         activeQuestion?.total_questions ??
         5;
 
@@ -1230,6 +1253,7 @@ export default function InterviewRoom() {
 
       const nextTitle =
         nextData.interview_title ||
+        nextData.active_question?.interview_title ||
         activeQuestion?.interview_title ||
         'Adaptive Technical Interview';
 
@@ -1238,7 +1262,7 @@ export default function InterviewRoom() {
         setSecondsRemaining(nextData.time_remaining_seconds);
       }
 
-      // 3. Update active question state using server data
+      // 3. Update active question state using authoritative server data
       setActiveQuestion({
         session_id: sessionId,
         question_index: nextIndex,
@@ -2044,6 +2068,46 @@ export default function InterviewRoom() {
                     {/* Difficulty Badge */}
                     {getDifficultyBadge(activeQuestion?.difficulty)}
 
+                    {/* Prominent Next Question Header Action when answer evaluated (always visible outside scroll container) */}
+                    {lastEvaluation && !lastEvaluation.isFinal && (
+                      <button
+                        type="button"
+                        onClick={handleProceedToNextQuestion}
+                        disabled={isProgressing}
+                        id="header-action-next-question-btn"
+                        data-testid="header-next-question-btn"
+                        className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-violet-600/30 transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer animate-pulse"
+                      >
+                        {isProgressing ? (
+                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <>
+                            <span>Next Question</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                    )}
+                    {lastEvaluation && lastEvaluation.isFinal && (
+                      <button
+                        type="button"
+                        onClick={handleViewScorecard}
+                        disabled={isProgressing}
+                        id="header-action-view-scorecard-btn"
+                        data-testid="header-view-scorecard-btn"
+                        className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/30 transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer animate-pulse"
+                      >
+                        {isProgressing ? (
+                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <>
+                            <Award className="w-3.5 h-3.5" />
+                            <span>View Scorecard</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+
                     {/* Live Countdown Timer */}
                     <div className="flex items-center space-x-1.5 px-3 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-mono">
                       <Clock className="w-3.5 h-3.5 text-amber-400" />
@@ -2217,6 +2281,7 @@ export default function InterviewRoom() {
                             onClick={handleProceedToNextQuestion}
                             disabled={isProgressing}
                             id="proceed-to-next-question-btn"
+                            data-testid="proceed-next-question-btn"
                             className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
                           >
                             {isProgressing ? (
@@ -2226,7 +2291,7 @@ export default function InterviewRoom() {
                               </>
                             ) : (
                               <>
-                                <span>Proceed to Next Question</span>
+                                <span>Next Question</span>
                                 <ArrowRight className="w-3.5 h-3.5" />
                               </>
                             )}
@@ -2499,7 +2564,8 @@ export default function InterviewRoom() {
                             onClick={handleProceedToNextQuestion}
                             disabled={isProgressing}
                             id="bottom-action-proceed-next-question-btn"
-                            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center space-x-2 disabled:opacity-50 cursor-pointer"
+                            data-testid="next-question-btn"
+                            className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-violet-600/25 transition flex items-center space-x-2 disabled:opacity-50 cursor-pointer"
                           >
                             {isProgressing ? (
                               <>
@@ -2508,7 +2574,7 @@ export default function InterviewRoom() {
                               </>
                             ) : (
                               <>
-                                <span>Proceed to Next Question</span>
+                                <span>Next Question</span>
                                 <ArrowRight className="w-3.5 h-3.5" />
                               </>
                             )}
@@ -2591,6 +2657,7 @@ export default function InterviewRoom() {
                         onClick={handleProceedToNextQuestion}
                         disabled={isProgressing}
                         id="sandbox-proceed-next-question-btn"
+                        data-testid="sandbox-next-question-btn"
                         className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
                       >
                         {isProgressing ? (
@@ -2600,7 +2667,7 @@ export default function InterviewRoom() {
                           </>
                         ) : (
                           <>
-                            <span>Proceed to Next Question</span>
+                            <span>Next Question</span>
                             <ArrowRight className="w-3.5 h-3.5" />
                           </>
                         )}
@@ -2678,6 +2745,7 @@ export default function InterviewRoom() {
                         type="button"
                         onClick={handleProceedToNextQuestion}
                         disabled={isProgressing}
+                        data-testid="coding-drawer-next-question-btn"
                         className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
                       >
                         {isProgressing ? (
@@ -2687,7 +2755,7 @@ export default function InterviewRoom() {
                           </>
                         ) : (
                           <>
-                            <span>Proceed to Next Question</span>
+                            <span>Next Question</span>
                             <ArrowRight className="w-3.5 h-3.5" />
                           </>
                         )}
