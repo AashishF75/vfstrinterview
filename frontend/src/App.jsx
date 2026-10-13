@@ -317,54 +317,86 @@ function HomePage() {
         {/* Clean, Concise Core Capabilities Overview */}
         <section className="border-t border-slate-900/90 pt-16 pb-16">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="p-6 rounded-2xl bg-slate-950/40 border border-slate-900 hover:border-slate-800 transition">
-              <div className="w-10 h-10 rounded-xl bg-cyan-950/60 border border-cyan-800/40 text-cyan-400 flex items-center justify-center mb-4">
-                <Cpu className="w-5 h-5" />
+            {/* Feature 1: Adaptive Technical Practice */}
+            <div
+              tabIndex={0}
+              className="group relative p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 hover:border-cyan-500/50 hover:bg-[#0e1830] hover:-translate-y-1.5 hover:shadow-[0_16px_36px_-8px_rgba(6,182,212,0.25),0_0_20px_-4px_rgba(139,92,246,0.18)] transition-all duration-300 ease-out overflow-hidden cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#030712]"
+            >
+              {/* Iridescent subtle gradient sheen on hover */}
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-cyan-500/10 via-transparent to-violet-500/10 pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100" />
+              <div className="absolute -top-12 -right-12 w-32 h-32 rounded-full blur-2xl pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100 bg-cyan-500/15" />
+
+              <div className="relative z-10">
+                <div className="w-11 h-11 rounded-xl bg-cyan-950/70 border border-cyan-800/50 text-cyan-400 flex items-center justify-center mb-4 transition-all duration-300 group-hover:border-cyan-400/60 group-hover:shadow-[0_0_15px_rgba(6,182,212,0.3)]">
+                  <Cpu className="w-5 h-5 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-1" />
+                </div>
+                <h3 className="text-base font-bold text-white mb-2 tracking-tight group-hover:text-cyan-200 transition-colors duration-200">
+                  Adaptive Technical Practice
+                </h3>
+                <p className="text-xs text-slate-400 group-hover:text-slate-300 leading-relaxed transition-colors duration-200">
+                  Interview questions adjust dynamically based on candidate answer depth and conceptual accuracy, simulating technical panel interviews.
+                </p>
               </div>
-              <h3 className="text-base font-bold text-white mb-2">Adaptive Technical Practice</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Interview questions adjust dynamically based on candidate answer depth and conceptual accuracy, simulating technical panel interviews.
-              </p>
             </div>
 
-            <div className="p-6 rounded-2xl bg-slate-950/40 border border-slate-900 hover:border-slate-800 transition">
-              <div className="w-10 h-10 rounded-xl bg-indigo-950/60 border border-indigo-800/40 text-indigo-400 flex items-center justify-center mb-4">
-                <GraduationCap className="w-5 h-5" />
+            {/* Feature 2: Institutional Cohort Management */}
+            <div
+              tabIndex={0}
+              className="group relative p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 hover:border-indigo-500/50 hover:bg-[#0e172e] hover:-translate-y-1.5 hover:shadow-[0_16px_36px_-8px_rgba(99,102,241,0.25),0_0_20px_-4px_rgba(6,182,212,0.18)] transition-all duration-300 ease-out overflow-hidden cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#030712]"
+            >
+              {/* Iridescent subtle gradient sheen on hover */}
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-indigo-500/10 via-transparent to-violet-500/10 pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100" />
+              <div className="absolute -top-12 -right-12 w-32 h-32 rounded-full blur-2xl pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100 bg-indigo-500/15" />
+
+              <div className="relative z-10">
+                <div className="w-11 h-11 rounded-xl bg-indigo-950/70 border border-indigo-800/50 text-indigo-400 flex items-center justify-center mb-4 transition-all duration-300 group-hover:border-indigo-400/60 group-hover:shadow-[0_0_15px_rgba(99,102,241,0.3)]">
+                  <GraduationCap className="w-5 h-5 transition-transform duration-300 group-hover:scale-110 group-hover:-rotate-1" />
+                </div>
+                <h3 className="text-base font-bold text-white mb-2 tracking-tight group-hover:text-indigo-200 transition-colors duration-200">
+                  Institutional Cohort Management
+                </h3>
+                <p className="text-xs text-slate-400 group-hover:text-slate-300 leading-relaxed transition-colors duration-200">
+                  Faculty and administrators schedule department interview sessions, assign verified students by registration number, and track completion.
+                </p>
               </div>
-              <h3 className="text-base font-bold text-white mb-2">Institutional Cohort Management</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Faculty and administrators schedule department interview sessions, assign verified students by registration number, and track completion.
-              </p>
             </div>
 
-            <div className="p-6 rounded-2xl bg-slate-950/40 border border-slate-900 hover:border-slate-800 transition">
-              <div className="w-10 h-10 rounded-xl bg-violet-950/60 border border-violet-800/40 text-violet-400 flex items-center justify-center mb-4">
-                <ShieldCheck className="w-5 h-5" />
+            {/* Feature 3: Structured Evaluation & Telemetry */}
+            <div
+              tabIndex={0}
+              className="group relative p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 hover:border-violet-500/50 hover:bg-[#0e162d] hover:-translate-y-1.5 hover:shadow-[0_16px_36px_-8px_rgba(139,92,246,0.25),0_0_20px_-4px_rgba(6,182,212,0.18)] transition-all duration-300 ease-out overflow-hidden cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#030712]"
+            >
+              {/* Iridescent subtle gradient sheen on hover */}
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-violet-500/10 via-transparent to-cyan-500/10 pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100" />
+              <div className="absolute -top-12 -right-12 w-32 h-32 rounded-full blur-2xl pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100 bg-violet-500/15" />
+
+              <div className="relative z-10">
+                <div className="w-11 h-11 rounded-xl bg-violet-950/70 border border-violet-800/50 text-violet-400 flex items-center justify-center mb-4 transition-all duration-300 group-hover:border-violet-400/60 group-hover:shadow-[0_0_15px_rgba(139,92,246,0.3)]">
+                  <ShieldCheck className="w-5 h-5 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-1" />
+                </div>
+                <h3 className="text-base font-bold text-white mb-2 tracking-tight group-hover:text-violet-200 transition-colors duration-200">
+                  Structured Evaluation & Telemetry
+                </h3>
+                <p className="text-xs text-slate-400 group-hover:text-slate-300 leading-relaxed transition-colors duration-200">
+                  Detailed dimensional feedback across technical correctness and communication, supported by privacy-focused Level 1 proctoring integrity tracking.
+                </p>
               </div>
-              <h3 className="text-base font-bold text-white mb-2">Structured Evaluation & Telemetry</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Detailed dimensional feedback across technical correctness and communication, supported by privacy-focused Level 1 proctoring integrity tracking.
-              </p>
             </div>
           </div>
         </section>
       </main>
 
       {/* Institutional Footer with Clean Diagnostic Action */}
-      <footer className="relative z-10 border-t border-slate-900 bg-[#030712] py-8 px-4 sm:px-6 lg:px-8 text-xs text-slate-400">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+      <footer className="relative z-10 border-t border-slate-900 bg-[#030712] py-6 sm:py-7 px-4 sm:px-6 lg:px-8 text-xs text-slate-400">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4">
           <div className="flex items-center space-x-2 text-slate-300">
-            <span className="font-semibold text-white">Adaptive Interview Intelligence</span>
-            <span>•</span>
-            <span>Vignan's Foundation for Science, Technology & Research (VFSTR)</span>
+            <span className="font-semibold text-white tracking-tight">Adaptive Interview Intelligence</span>
           </div>
 
-          <div className="flex items-center space-x-4 text-slate-400">
-            <span>NAAC A+ Accredited • Vadlamudi, Guntur</span>
-            <span className="text-slate-700">•</span>
+          <div className="flex items-center text-slate-400">
             <button
               onClick={() => setShowDiagnosticsModal(true)}
-              className="text-cyan-400 hover:text-cyan-300 transition underline underline-offset-4"
+              className="text-cyan-400 hover:text-cyan-300 transition-colors underline underline-offset-4 hover:decoration-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#030712] rounded-sm"
             >
               System Diagnostics
             </button>
