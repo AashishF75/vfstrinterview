@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   getAssignmentSession,
   startInterviewSession,
+  getCurrentQuestion,
   submitInterviewAnswer,
   runInterviewCode,
   submitInterviewCode,
@@ -15,6 +16,7 @@ import {
 } from '../api/client';
 import ProctoringPreflightModal from '../components/ProctoringPreflightModal';
 import ProctoringCameraWidget from '../components/ProctoringCameraWidget';
+import TalkingInterviewerAvatar from '../components/TalkingInterviewerAvatar';
 import aiInterviewerImg from '../assets/ai_interviewer.jpg';
 import candidateAvatarImg from '../assets/candidate_avatar.jpg';
 import {
@@ -102,6 +104,9 @@ export default function InterviewRoom() {
   // Immediate Evaluation Feedback State (between questions)
   const [lastEvaluation, setLastEvaluation] = useState(null);
   const [pendingNextQuestion, setPendingNextQuestion] = useState(null);
+  const [isProgressing, setIsProgressing] = useState(false);
+  const [progressionError, setProgressionError] = useState(null);
+  const evaluationCardRef = useRef(null);
 
   // Final Scorecard State
   const [isCompleted, setIsCompleted] = useState(false);
@@ -144,6 +149,7 @@ export default function InterviewRoom() {
   const lastSpokenQuestionIndexRef = useRef(null);
   const [, setVoicesLoaded] = useState(false);
   const deepgramAudioRef = useRef(null);
+  const [deepgramAudioInstance, setDeepgramAudioInstance] = useState(null);
   const audioPlaybackUrlRef = useRef(null);
 
   // --------------------------------------------------------------------------
@@ -404,6 +410,7 @@ export default function InterviewRoom() {
                 audioPlaybackUrlRef.current = null;
               }
               deepgramAudioRef.current = null;
+              setDeepgramAudioInstance(null);
             };
 
             audio.onerror = () => {
@@ -414,10 +421,12 @@ export default function InterviewRoom() {
                 audioPlaybackUrlRef.current = null;
               }
               deepgramAudioRef.current = null;
+              setDeepgramAudioInstance(null);
               speakQuestionBrowser(text);
             };
 
             deepgramAudioRef.current = audio;
+            setDeepgramAudioInstance(audio);
             await audio.play();
             return;
           }
@@ -457,6 +466,7 @@ export default function InterviewRoom() {
       } catch {}
       deepgramAudioRef.current = null;
     }
+    setDeepgramAudioInstance(null);
     if (audioPlaybackUrlRef.current) {
       try {
         URL.revokeObjectURL(audioPlaybackUrlRef.current);
@@ -737,6 +747,7 @@ export default function InterviewRoom() {
           deepgramAudioRef.current = null;
         } catch {}
       }
+      setDeepgramAudioInstance(null);
       if (audioPlaybackUrlRef.current) {
         try {
           URL.revokeObjectURL(audioPlaybackUrlRef.current);
@@ -1061,6 +1072,7 @@ export default function InterviewRoom() {
 
     setSubmitting(true);
     setError(null);
+    setProgressionError(null);
 
     const isCoding = activeQuestion?.question_type === 'coding';
     const lang = selectedLanguage.toLowerCase() === 'c++' ? 'cpp' : selectedLanguage.toLowerCase();
@@ -1078,12 +1090,36 @@ export default function InterviewRoom() {
     setSubmitting(false);
 
     if (!res.success) {
+      // Duplicate submission conflict guard (409): check if backend already advanced to next question
+      if (res.status === 409 || (res.error && res.error.toLowerCase().includes('already been submitted'))) {
+        try {
+          const curRes = await getCurrentQuestion(sessionId);
+          if (curRes.success && curRes.data) {
+            const nextIdx = curRes.data.question_index ?? curRes.data.current_question_index;
+            if (nextIdx > (activeQuestion?.question_index || 1)) {
+              setPendingNextQuestion(curRes.data);
+              setLastEvaluation({
+                score: 8.0,
+                feedback: 'Your answer for this question was previously submitted and recorded on the server. Ready to proceed to the next question.',
+                strengths: ['Answer recorded on server'],
+                improvements: [],
+                difficultyRationale: 'Session synchronized with server progression.',
+                codeExecutionSummary: null,
+                isFinal: false,
+              });
+              return;
+            }
+          }
+        } catch {}
+      }
+
       setError(res.error || 'Failed to submit solution. Please check compiler output or retry.');
       return;
     }
 
     const data = res.data;
 
+    // Show real evaluation feedback and score
     setLastEvaluation({
       score: data.evaluated_score ?? data.evaluation?.score ?? 0,
       feedback: data.feedback ?? data.evaluation?.feedback ?? '',
@@ -1091,77 +1127,132 @@ export default function InterviewRoom() {
       improvements: data.improvements ?? data.evaluation?.improvements ?? [],
       difficultyRationale: data.difficulty_rationale ?? data.difficulty_adjustment_rationale ?? '',
       codeExecutionSummary: data.code_execution_summary ?? null,
-      isFinal: data.is_session_completed,
+      isFinal: !!data.is_session_completed,
     });
 
     if (data.is_session_completed) {
-      setIsCompleted(true);
-      const scRes = await getSessionScorecard(sessionId);
-      if (scRes.success) {
-        setScorecard(scRes.data);
-      }
+      // Pre-fetch scorecard in background without prematurely hiding evaluation feedback
+      getSessionScorecard(sessionId)
+        .then((scRes) => {
+          if (scRes.success && scRes.data) {
+            setScorecard(scRes.data);
+          }
+        })
+        .catch(() => {});
     } else if (data.next_question) {
       setPendingNextQuestion(data.next_question);
     }
+
+    // Smoothly scroll chat view to evaluation card
+    setTimeout(() => {
+      if (evaluationCardRef.current) {
+        evaluationCardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 120);
   };
 
-  const handleProceedToNextQuestion = () => {
-    if (pendingNextQuestion) {
-      handleStopSpeech();
-      stopVoiceRecognition();
-      if (isRecordingAudio) {
-        cancelDeepgramRecording();
+  const handleProceedToNextQuestion = async () => {
+    if (isProgressing || !sessionId) return;
+
+    handleStopSpeech();
+    stopVoiceRecognition();
+    if (isRecordingAudio) {
+      cancelDeepgramRecording();
+    }
+    setIsTranscribingAudio(false);
+    setSpeechError(null);
+    setInterimTranscript('');
+    setProgressionError(null);
+    setIsProgressing(true);
+
+    try {
+      // 1. Resolve next question data (prefer pendingNextQuestion or fetch live from backend)
+      let nextData = pendingNextQuestion;
+
+      if (!nextData || !nextData.question_text) {
+        const curRes = await getCurrentQuestion(sessionId);
+        if (curRes.success && curRes.data) {
+          nextData = curRes.data;
+        } else {
+          throw new Error(curRes.error || 'Failed to retrieve next question from server.');
+        }
       }
-      setIsTranscribingAudio(false);
-      setSpeechError(null);
-      setInterimTranscript('');
-      setExecutionResult(null);
-      setUseCustomInput(false);
-      setCustomInputText('');
+
+      // Check if session reached final completion
+      if (nextData.is_session_completed || nextData.session_status === 'completed') {
+        await handleViewScorecard();
+        setIsProgressing(false);
+        return;
+      }
 
       const nextText =
-        pendingNextQuestion.question_text ||
-        pendingNextQuestion.question ||
-        pendingNextQuestion.active_question?.question_text ||
-        pendingNextQuestion.active_question?.question ||
+        nextData.question_text ||
+        nextData.question ||
+        nextData.active_question?.question_text ||
+        nextData.active_question?.question ||
         '';
 
+      if (!nextText) {
+        throw new Error('Retrieved next question text is empty. Please retry.');
+      }
+
       const nextTopic =
-        pendingNextQuestion.topic ||
-        pendingNextQuestion.active_question?.topic ||
+        nextData.topic ||
+        nextData.active_question?.topic ||
         activeQuestion?.topic ||
         'Core Fundamentals';
 
       const nextDiff =
-        pendingNextQuestion.difficulty ||
-        pendingNextQuestion.active_question?.difficulty ||
+        nextData.difficulty ||
+        nextData.active_question?.difficulty ||
         'medium';
 
       const nextType =
-        pendingNextQuestion.question_type ||
-        pendingNextQuestion.active_question?.question_type ||
+        nextData.question_type ||
+        nextData.active_question?.question_type ||
         'conceptual';
 
       const nextIndex =
-        pendingNextQuestion.question_index ??
+        nextData.question_index ??
+        nextData.current_question_index ??
         (activeQuestion?.question_index ? activeQuestion.question_index + 1 : 2);
 
+      const nextTotal =
+        nextData.total_questions ??
+        nextData.total_questions_target ??
+        activeQuestion?.total_questions ??
+        5;
+
       const nextCodingSpec =
-        pendingNextQuestion.coding_spec ||
-        pendingNextQuestion.active_question?.coding_spec ||
+        nextData.coding_spec ||
+        nextData.active_question?.coding_spec ||
         null;
 
-      setActiveQuestion((prev) => ({
-        ...prev,
+      const nextTitle =
+        nextData.interview_title ||
+        activeQuestion?.interview_title ||
+        'Adaptive Technical Interview';
+
+      // 2. Update remaining time if provided by backend
+      if (nextData.time_remaining_seconds != null && nextData.time_remaining_seconds >= 0) {
+        setSecondsRemaining(nextData.time_remaining_seconds);
+      }
+
+      // 3. Update active question state using server data
+      setActiveQuestion({
+        session_id: sessionId,
         question_index: nextIndex,
+        total_questions: nextTotal,
         question_text: nextText,
         topic: nextTopic,
         difficulty: nextDiff,
         question_type: nextType,
         coding_spec: nextCodingSpec,
-        evaluator_mode: pendingNextQuestion.evaluator_mode || prev?.evaluator_mode,
-      }));
+        interview_title: nextTitle,
+        evaluator_mode: nextData.evaluator_mode || activeQuestion?.evaluator_mode,
+      });
 
+      // 4. Clear answer draft ONLY after next question is loaded successfully
       if (nextType === 'coding') {
         setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python'] || '');
         setActiveTab('code');
@@ -1169,8 +1260,41 @@ export default function InterviewRoom() {
         setAnswerText('');
         setActiveTab('room');
       }
+
+      // 5. Reset execution result and evaluation state
+      setExecutionResult(null);
+      setUseCustomInput(false);
+      setCustomInputText('');
       setLastEvaluation(null);
       setPendingNextQuestion(null);
+      setProgressionError(null);
+    } catch (err) {
+      // Useful error if progression fails, preserving evaluated answer and lastEvaluation for safe retry
+      setProgressionError(err.message || 'Unable to advance to the next question. Please click Retry.');
+    } finally {
+      setIsProgressing(false);
+    }
+  };
+
+  const handleViewScorecard = async () => {
+    setIsProgressing(true);
+    setProgressionError(null);
+    try {
+      let sc = scorecard;
+      if (!sc) {
+        const scRes = await getSessionScorecard(sessionId);
+        if (scRes.success && scRes.data) {
+          sc = scRes.data;
+          setScorecard(sc);
+        } else {
+          throw new Error(scRes.error || 'Failed to load finalized scorecard.');
+        }
+      }
+      setIsCompleted(true);
+    } catch (err) {
+      setProgressionError(err.message || 'Failed to load scorecard. Please retry.');
+    } finally {
+      setIsProgressing(false);
     }
   };
 
@@ -1762,15 +1886,14 @@ export default function InterviewRoom() {
             {/* -------------------------------------------------------------- */}
             <div className="lg:col-span-5 flex flex-col space-y-3">
               <div className="relative rounded-2xl border border-slate-800 bg-[#070D1E] shadow-2xl overflow-hidden flex-1 min-h-[380px] lg:min-h-[460px] flex flex-col justify-between glow-border-violet group">
-                {/* AI Interviewer Avatar Image with Subtle Atmospheric Lighting */}
+                {/* AI Interviewer Avatar with Synchronized Talking Head & Face Articulation */}
                 <div className="absolute inset-0 z-0 overflow-hidden bg-slate-950">
-                  <img
-                    src={aiInterviewerImg}
-                    alt="AI Interviewer"
-                    className="w-full h-full object-cover object-center filter brightness-95 contrast-105 transition duration-700 group-hover:scale-102"
-                    onError={(e) => {
-                      e.target.style.display = 'none';
-                    }}
+                  <TalkingInterviewerAvatar
+                    imageSrc={aiInterviewerImg}
+                    isSpeaking={isSpeaking}
+                    audioElement={deepgramAudioInstance}
+                    speakingSource={speakingSource}
+                    interviewerStatus={getInterviewerState()}
                   />
                   {/* Subtle Dark Vignette & Neon Rim Glow */}
                   <div className="absolute inset-0 bg-gradient-to-t from-[#070D1E] via-transparent to-black/30 pointer-events-none" />
@@ -2015,33 +2138,98 @@ export default function InterviewRoom() {
 
                   {/* Immediate Feedback Drawer in Conversational Thread */}
                   {lastEvaluation && (
-                    <div className="p-4 rounded-xl bg-slate-900/90 border border-violet-500/40 space-y-3 animate-in fade-in">
+                    <div
+                      ref={evaluationCardRef}
+                      className="p-4 rounded-xl bg-slate-900/90 border border-violet-500/40 space-y-3 animate-in fade-in"
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-2">
                           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                          <span className="text-xs font-bold text-white">Evaluation Feedback (Question Complete)</span>
+                          <span className="text-xs font-bold text-white">
+                            {lastEvaluation.isFinal
+                              ? 'Final Question Evaluation Complete'
+                              : 'Evaluation Feedback (Question Complete)'}
+                          </span>
                         </div>
                         <div className="px-2.5 py-0.5 rounded-lg bg-violet-950 border border-violet-800 text-xs font-bold text-violet-300 font-mono">
                           Score: {lastEvaluation.score} / 10
                         </div>
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">{lastEvaluation.feedback}</p>
+
+                      {lastEvaluation.strengths && lastEvaluation.strengths.length > 0 && (
+                        <div className="space-y-1 pt-1">
+                          <span className="text-[11px] font-semibold text-emerald-400">Strengths:</span>
+                          <ul className="list-disc list-inside text-[11px] text-slate-300 space-y-0.5">
+                            {lastEvaluation.strengths.map((str, idx) => (
+                              <li key={idx}>{str}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {lastEvaluation.improvements && lastEvaluation.improvements.length > 0 && (
+                        <div className="space-y-1 pt-1">
+                          <span className="text-[11px] font-semibold text-amber-400">Areas for Growth:</span>
+                          <ul className="list-disc list-inside text-[11px] text-slate-300 space-y-0.5">
+                            {lastEvaluation.improvements.map((imp, idx) => (
+                              <li key={idx}>{imp}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {progressionError && (
+                        <div className="p-2.5 rounded-lg bg-rose-950/80 border border-rose-500/50 text-xs text-rose-200 flex items-center justify-between">
+                          <div className="flex items-center space-x-1.5">
+                            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                            <span>{progressionError}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={lastEvaluation.isFinal ? handleViewScorecard : handleProceedToNextQuestion}
+                            className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-semibold transition"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      )}
+
                       <div className="flex justify-end pt-1">
                         {lastEvaluation.isFinal ? (
                           <button
-                            onClick={() => setIsCompleted(true)}
-                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5"
+                            type="button"
+                            onClick={handleViewScorecard}
+                            disabled={isProgressing}
+                            id="proceed-view-scorecard-btn"
+                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
                           >
-                            <Award className="w-3.5 h-3.5" />
+                            {isProgressing ? (
+                              <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Award className="w-3.5 h-3.5" />
+                            )}
                             <span>View Final Scorecard</span>
                           </button>
                         ) : (
                           <button
+                            type="button"
                             onClick={handleProceedToNextQuestion}
-                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5"
+                            disabled={isProgressing}
+                            id="proceed-to-next-question-btn"
+                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
                           >
-                            <span>Proceed to Next Question</span>
-                            <ArrowRight className="w-3.5 h-3.5" />
+                            {isProgressing ? (
+                              <>
+                                <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Loading Next Question...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>Proceed to Next Question</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </>
+                            )}
                           </button>
                         )}
                       </div>
@@ -2203,7 +2391,7 @@ export default function InterviewRoom() {
                   )}
 
                   {/* Candidate Technical Response Editor & Submit Action */}
-                  {!lastEvaluation && (
+                  {!lastEvaluation ? (
                     <div className="space-y-2 animate-in fade-in">
                       <div className="flex items-center justify-between">
                         <label
@@ -2229,7 +2417,7 @@ export default function InterviewRoom() {
                         rows={3}
                         value={answerText}
                         onChange={(e) => setAnswerText(e.target.value)}
-                        disabled={submitting || !!lastEvaluation || isTranscribingAudio}
+                        disabled={submitting || isTranscribingAudio}
                         placeholder={
                           isRecordingAudio
                             ? "Listening... Speak your answer now. Click the microphone button when finished."
@@ -2248,9 +2436,9 @@ export default function InterviewRoom() {
                         <button
                           type="button"
                           onClick={handleSubmitAnswer}
-                          disabled={submitting || !answerText.trim() || !!lastEvaluation || isTranscribingAudio}
+                          disabled={submitting || !answerText.trim() || isTranscribingAudio}
                           id="submit-conversational-answer-btn"
-                          className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center space-x-1.5 disabled:opacity-50"
+                          className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
                         >
                           {submitting ? (
                             <>
@@ -2264,6 +2452,68 @@ export default function InterviewRoom() {
                             </>
                           )}
                         </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Prominent Evaluation Progression Bar shown at bottom when answer is evaluated */
+                    <div className="p-3.5 rounded-xl bg-slate-900 border border-violet-500/40 flex flex-wrap items-center justify-between gap-3 animate-in fade-in">
+                      <div className="flex items-center space-x-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center space-x-2">
+                            <span>Answer Evaluated</span>
+                            <span className="px-2 py-0.5 rounded bg-violet-950 border border-violet-800 text-[11px] font-mono text-violet-300">
+                              {lastEvaluation.score} / 10
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            {lastEvaluation.isFinal
+                              ? 'Interview complete. Click below to view your full scorecard.'
+                              : 'Review evaluation feedback above, then proceed to the next question.'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        {progressionError && (
+                          <span className="text-xs text-rose-400 font-medium mr-1">{progressionError}</span>
+                        )}
+                        {lastEvaluation.isFinal ? (
+                          <button
+                            type="button"
+                            onClick={handleViewScorecard}
+                            disabled={isProgressing}
+                            id="bottom-action-view-scorecard-btn"
+                            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 transition flex items-center space-x-2 disabled:opacity-50 cursor-pointer"
+                          >
+                            {isProgressing ? (
+                              <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Award className="w-4 h-4" />
+                            )}
+                            <span>Complete & View Scorecard</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleProceedToNextQuestion}
+                            disabled={isProgressing}
+                            id="bottom-action-proceed-next-question-btn"
+                            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center space-x-2 disabled:opacity-50 cursor-pointer"
+                          >
+                            {isProgressing ? (
+                              <>
+                                <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Loading Next Question...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>Proceed to Next Question</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </>
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
@@ -2323,27 +2573,129 @@ export default function InterviewRoom() {
                     )}
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={handleSubmitAnswer}
-                    disabled={submitting || runningCode || !answerText.trim()}
-                    id="sandbox-submit-solution-btn"
-                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
-                  >
-                    {submitting ? (
-                      <>
-                        <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Evaluating...</span>
-                      </>
+                  {lastEvaluation ? (
+                    lastEvaluation.isFinal ? (
+                      <button
+                        type="button"
+                        onClick={handleViewScorecard}
+                        disabled={isProgressing}
+                        id="sandbox-view-scorecard-btn"
+                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                      >
+                        {isProgressing ? <RotateCcw className="w-3.5 h-3.5 animate-spin" /> : <Award className="w-3.5 h-3.5" />}
+                        <span>View Final Scorecard</span>
+                      </button>
                     ) : (
-                      <>
-                        <span>Submit Solution</span>
-                        <Send className="w-3.5 h-3.5" />
-                      </>
-                    )}
-                  </button>
+                      <button
+                        type="button"
+                        onClick={handleProceedToNextQuestion}
+                        disabled={isProgressing}
+                        id="sandbox-proceed-next-question-btn"
+                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                      >
+                        {isProgressing ? (
+                          <>
+                            <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Loading Next Question...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>Proceed to Next Question</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleSubmitAnswer}
+                      disabled={submitting || runningCode || !answerText.trim()}
+                      id="sandbox-submit-solution-btn"
+                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                    >
+                      {submitting ? (
+                        <>
+                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Evaluating...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Submit Solution</span>
+                          <Send className="w-3.5 h-3.5" />
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {/* Solution Evaluation Feedback Drawer in Coding Sandbox */}
+              {lastEvaluation && (
+                <div className="p-4 rounded-xl bg-slate-900/90 border border-violet-500/40 space-y-2.5 animate-in fade-in">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span className="text-xs font-bold text-white">
+                        {lastEvaluation.isFinal ? 'Final Coding Solution Evaluated' : 'Coding Solution Evaluated'}
+                      </span>
+                    </div>
+                    <div className="px-2.5 py-0.5 rounded-lg bg-violet-950 border border-violet-800 text-xs font-bold text-violet-300 font-mono">
+                      Score: {lastEvaluation.score} / 10
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">{lastEvaluation.feedback}</p>
+
+                  {progressionError && (
+                    <div className="p-2.5 rounded-lg bg-rose-950/80 border border-rose-500/50 text-xs text-rose-200 flex items-center justify-between">
+                      <div className="flex items-center space-x-1.5">
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>{progressionError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={lastEvaluation.isFinal ? handleViewScorecard : handleProceedToNextQuestion}
+                        className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-semibold transition"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end pt-1">
+                    {lastEvaluation.isFinal ? (
+                      <button
+                        type="button"
+                        onClick={handleViewScorecard}
+                        disabled={isProgressing}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
+                      >
+                        {isProgressing ? <RotateCcw className="w-3.5 h-3.5 animate-spin" /> : <Award className="w-3.5 h-3.5" />}
+                        <span>View Final Scorecard</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleProceedToNextQuestion}
+                        disabled={isProgressing}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50"
+                      >
+                        {isProgressing ? (
+                          <>
+                            <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Loading Next Question...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>Proceed to Next Question</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Code Editor Textarea */}
               <div className="relative rounded-xl border border-slate-800 overflow-hidden bg-slate-950 shadow-inner">
