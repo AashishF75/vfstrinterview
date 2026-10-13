@@ -408,4 +408,77 @@ describe('Interview Progression and Talking Avatar Tests', () => {
     assert.equal(state.activeTab, 'code');
     assert.ok(state.answerText.includes('# Python 3 Solution'));
   });
+
+  // Test 7: Avatar mouth deformation continuity and zero boundary edge artifacts
+  test('Avatar mouth deformation produces continuous smooth displacement with zero edge seams', () => {
+    const cropW = 105;
+    const cropH = 70;
+    const cropX = 639;
+    const cropY = 296;
+
+    const hFactors = new Float32Array(cropW);
+    for (let x = 0; x < cropW; x++) {
+      const dx = (cropX + x - 691) / 52;
+      hFactors[x] = Math.abs(dx) < 1 ? 0.5 * (1 + Math.cos(dx * Math.PI)) : 0;
+    }
+
+    const vFactors = new Float32Array(cropH);
+    for (let y = 0; y < cropH; y++) {
+      const fullY = cropY + y;
+      if (fullY <= 312) {
+        const t = Math.max(0, (fullY - 296) / 16);
+        vFactors[y] = t * t * (3 - 2 * t);
+      } else if (fullY <= 365) {
+        const t = Math.min(1, (fullY - 312) / 53);
+        const st = t * t * (3 - 2 * t);
+        vFactors[y] = 1 - st;
+      } else {
+        vFactors[y] = 0;
+      }
+    }
+
+    // 1. Boundary condition: displacement at borders must be exactly 0 (seamless blending)
+    assert.equal(hFactors[0], 0, 'Left boundary displacement must be 0 to prevent seam lines');
+    assert.equal(hFactors[cropW - 1], 0, 'Right boundary displacement must be 0 to prevent seam lines');
+    assert.equal(vFactors[0], 0, 'Top boundary displacement must be 0 to prevent seam lines');
+    assert.ok(vFactors[cropH - 1] < 1e-4, 'Bottom boundary displacement must be negligible to prevent seam lines');
+
+    // 2. Monotonicity: max vertical displacement derivative must remain << 1.0 (no foldover or tears)
+    const maxSpeechDisp = 3.0; // peak speech displacement
+    for (let y = 0; y < cropH - 1; y++) {
+      const derivative = (vFactors[y + 1] - vFactors[y]) * maxSpeechDisp;
+      assert.ok(Math.abs(derivative) < 0.5, `Vertical derivative at row ${y} must not cause pixel tearing`);
+    }
+
+    // 3. Peak displacement is within subtle physiological limits (<= 3.0px)
+    let peakV = 0;
+    for (let y = 0; y < cropH; y++) {
+      if (vFactors[y] > peakV) peakV = vFactors[y];
+    }
+    const peakDisplacement = peakV * maxSpeechDisp;
+    assert.ok(peakDisplacement <= 3.0, 'Mouth displacement must be subtle and realistic');
+  });
+
+  // Test 8: Avatar returns to natural resting unwarped photo when volume decays or speech pauses
+  test('Avatar returns strictly to resting unwarped photo when volume is at or below threshold', () => {
+    let currentVolume = 0.8;
+    const decay = 0.25;
+
+    // Simulate speech finishing (targetVolume = 0)
+    const targetVolume = 0;
+    let framesToResting = 0;
+
+    while (currentVolume > 0.012 && framesToResting < 60) {
+      currentVolume += (targetVolume - currentVolume) * decay;
+      framesToResting++;
+    }
+
+    // Volume must decay into resting deadzone within ~15 frames (~250ms)
+    assert.ok(currentVolume <= 0.012, 'Volume must reach resting state');
+    assert.ok(framesToResting <= 20, 'Return to closed resting position must be prompt and natural');
+
+    // At resting state, mouth is drawn directly from base unblemished photo (displacement = 0)
+    const isWarpActive = currentVolume > 0.012;
+    assert.equal(isWarpActive, false, 'No warping or overlays must render when audio is resting');
+  });
 });

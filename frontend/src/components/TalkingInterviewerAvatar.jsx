@@ -49,6 +49,79 @@ export default function TalkingInterviewerAvatar({
   // Reduced motion preference
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
+  // Elastic Mouth Articulation Refs & Precomputed Lookup Tables
+  // Avoids artificial drawn lines/shapes over lips by elastically displacing the real photographic texture
+  const mouthPatchCanvasRef = useRef(null);
+  const baseMouthDataRef = useRef(null);
+  const warpedCanvasRef = useRef(null);
+  const warpedCtxRef = useRef(null);
+  const warpedImageDataRef = useRef(null);
+  const warpLookupTablesRef = useRef(null);
+
+  // Precompute 1D horizontal & vertical deformation weights for 60 FPS real-time performance
+  useEffect(() => {
+    const cropW = 105;
+    const cropH = 70;
+    const cropX = 639;
+    const cropY = 296;
+
+    const hFactors = new Float32Array(cropW);
+    for (let x = 0; x < cropW; x++) {
+      const dx = (cropX + x - 691) / 52;
+      hFactors[x] = Math.abs(dx) < 1 ? 0.5 * (1 + Math.cos(dx * Math.PI)) : 0;
+    }
+
+    const vFactors = new Float32Array(cropH);
+    for (let y = 0; y < cropH; y++) {
+      const fullY = cropY + y;
+      if (fullY <= 312) {
+        const t = Math.max(0, (fullY - 296) / 16);
+        vFactors[y] = t * t * (3 - 2 * t);
+      } else if (fullY <= 365) {
+        const t = Math.min(1, (fullY - 312) / 53);
+        const st = t * t * (3 - 2 * t);
+        vFactors[y] = 1 - st;
+      } else {
+        vFactors[y] = 0;
+      }
+    }
+
+    warpLookupTablesRef.current = { hFactors, vFactors, cropX, cropY, cropW, cropH };
+  }, []);
+
+  // Initialize offscreen mouth buffers from the photographic image
+  const initMouthTextures = useCallback((loadedImg) => {
+    if (!loadedImg || !loadedImg.complete || typeof document === 'undefined') return;
+    try {
+      const cropW = 105;
+      const cropH = 70;
+      const cropX = 639;
+      const cropY = 296;
+
+      const patchCanvas = document.createElement('canvas');
+      patchCanvas.width = cropW;
+      patchCanvas.height = cropH;
+      const patchCtx = patchCanvas.getContext('2d', { willReadFrequently: true });
+      if (patchCtx) {
+        patchCtx.drawImage(loadedImg, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        baseMouthDataRef.current = patchCtx.getImageData(0, 0, cropW, cropH);
+        mouthPatchCanvasRef.current = patchCanvas;
+      }
+
+      const wCanvas = document.createElement('canvas');
+      wCanvas.width = cropW;
+      wCanvas.height = cropH;
+      warpedCanvasRef.current = wCanvas;
+      const wCtx = wCanvas.getContext('2d');
+      warpedCtxRef.current = wCtx;
+      if (wCtx) {
+        warpedImageDataRef.current = wCtx.createImageData(cropW, cropH);
+      }
+    } catch {
+      // Graceful fallback if offscreen canvas context is restricted
+    }
+  }, []);
+
   useEffect(() => {
     if (typeof window !== 'undefined' && window.matchMedia) {
       const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -67,6 +140,7 @@ export default function TalkingInterviewerAvatar({
     img.src = imageSrc;
     img.onload = () => {
       imageObjRef.current = img;
+      initMouthTextures(img);
       setImageLoaded(true);
     };
     img.onerror = () => {
@@ -75,10 +149,16 @@ export default function TalkingInterviewerAvatar({
       fallbackImg.src = imageSrc;
       fallbackImg.onload = () => {
         imageObjRef.current = fallbackImg;
+        initMouthTextures(fallbackImg);
         setImageLoaded(true);
       };
     };
-  }, [imageSrc]);
+    if (img.complete) {
+      imageObjRef.current = img;
+      initMouthTextures(img);
+      setImageLoaded(true);
+    }
+  }, [imageSrc, initMouthTextures]);
 
   // Connect Web Audio API AnalyserNode to the actual Deepgram audio element
   useEffect(() => {
@@ -298,93 +378,66 @@ export default function TalkingInterviewerAvatar({
       ctx.restore();
     }
 
-    // 5. Anatomical Mouth & Jaw Articulation
-    // Coordinates on 1376x768 image:
-    // Mouth center X: 691, Mouth baseline Y: 308
-    // Mouth width: ~78px, Mouth resting height: ~18px
-    if (currentVolume > 0.015) {
-      const mouthX = 691;
-      const mouthY = 308;
-      const openAmount = currentVolume * 15.0; // Max vertical opening 15px
-      const widthFlex = (smoothedVowelRef.current - 0.5) * 8.0 * currentVolume; // Width variation based on phoneme
+    // 5. Natural Photographic Mouth & Jaw Articulation (Artifact-Free Elastic Warp)
+    // Synchronized strictly with real-time TTS audio amplitude.
+    // Removes all synthetic vector lines, teeth overlays, and reddish lipstick strokes.
+    // When audio pauses or finishes, the mouth rests in its 100% untouched natural photographic state.
+    if (
+      currentVolume > 0.012 &&
+      warpLookupTablesRef.current
+    ) {
+      if (!baseMouthDataRef.current && img && img.complete) {
+        initMouthTextures(img);
+      }
 
-      ctx.save();
+      if (
+        baseMouthDataRef.current &&
+        warpedCanvasRef.current &&
+        warpedCtxRef.current &&
+        warpedImageDataRef.current
+      ) {
+        const { hFactors, vFactors, cropX, cropY, cropW, cropH } = warpLookupTablesRef.current;
+        const baseData = baseMouthDataRef.current.data;
+        const warpedData = warpedImageDataRef.current.data;
 
-      // Outer bounding box for lower jaw and mouth area
-      // Step A: Lower jaw displacement simulation
-      // We sample a small lower-lip/chin patch and translate it downwards slightly
-      const jawDrop = openAmount * 0.45;
-      const patchX = mouthX - 55;
-      const patchY = mouthY + 12;
-      const patchW = 110;
-      const patchH = 46;
+        // Dynamic vertical excursion: ~1.8px to 3.0px maximum (subtle, natural speech displacement)
+        const vowelBonus = (smoothedVowelRef.current - 0.5) * 0.8;
+        const maxDisp = currentVolume * Math.max(1.8, Math.min(3.0, 2.4 + vowelBonus));
 
-      ctx.save();
-      // Smooth gradient mask for jaw patch to avoid hard seam
-      ctx.beginPath();
-      ctx.ellipse(mouthX, patchY + patchH * 0.4 + jawDrop, patchW * 0.48, patchH * 0.45, 0, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.drawImage(img, patchX, patchY, patchW, patchH, patchX, patchY + jawDrop, patchW, patchH);
-      ctx.restore();
+        for (let y = 0; y < cropH; y++) {
+          const rowDisp = maxDisp * vFactors[y];
+          const rowOffset = y * cropW;
 
-      // Step B: Articulated Inner Mouth Opening (Oral Cavity & Teeth)
-      const oralW = 34 + widthFlex;
-      const oralH = Math.max(2.5, openAmount);
+          for (let x = 0; x < cropW; x++) {
+            const disp = rowDisp * hFactors[x];
+            const dstIdx = (rowOffset + x) * 4;
 
-      // 1. Deep Oral Cavity Shading
-      ctx.beginPath();
-      ctx.ellipse(mouthX, mouthY + oralH * 0.4, oralW, oralH, 0, 0, Math.PI * 2);
-      // Natural dark red/burgundy mouth interior
-      const cavityGrad = ctx.createRadialGradient(
-        mouthX,
-        mouthY + oralH * 0.3,
-        2,
-        mouthX,
-        mouthY + oralH * 0.4,
-        oralW
-      );
-      cavityGrad.addColorStop(0, 'rgba(42, 10, 14, 0.96)');
-      cavityGrad.addColorStop(0.7, 'rgba(78, 22, 26, 0.92)');
-      cavityGrad.addColorStop(1, 'rgba(128, 45, 50, 0.85)');
-      ctx.fillStyle = cavityGrad;
-      ctx.fill();
+            if (disp < 0.02) {
+              warpedData[dstIdx] = baseData[dstIdx];
+              warpedData[dstIdx + 1] = baseData[dstIdx + 1];
+              warpedData[dstIdx + 2] = baseData[dstIdx + 2];
+              warpedData[dstIdx + 3] = baseData[dstIdx + 3];
+            } else {
+              const srcLocalY = y - disp;
+              const y0 = Math.floor(srcLocalY);
+              const y1 = Math.min(cropH - 1, y0 + 1);
+              const fy = srcLocalY - y0;
+              const invFy = 1.0 - fy;
 
-      // 2. Upper Teeth Arc
-      ctx.beginPath();
-      ctx.ellipse(mouthX, mouthY - 1, oralW * 0.72, Math.min(oralH * 0.45, 4.5), 0, 0, Math.PI);
-      ctx.fillStyle = 'rgba(245, 240, 235, 0.94)';
-      ctx.fill();
+              const idx0 = (y0 * cropW + x) * 4;
+              const idx1 = (y1 * cropW + x) * 4;
 
-      // Subtle translucent tooth separation shadow
-      ctx.beginPath();
-      ctx.ellipse(mouthX, mouthY + 1.2, oralW * 0.65, 0.8, 0, 0, Math.PI);
-      ctx.strokeStyle = 'rgba(80, 40, 35, 0.4)';
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
+              warpedData[dstIdx] = invFy * baseData[idx0] + fy * baseData[idx1];
+              warpedData[dstIdx + 1] = invFy * baseData[idx0 + 1] + fy * baseData[idx1 + 1];
+              warpedData[dstIdx + 2] = invFy * baseData[idx0 + 2] + fy * baseData[idx1 + 2];
+              warpedData[dstIdx + 3] = invFy * baseData[idx0 + 3] + fy * baseData[idx1 + 3];
+            }
+          }
+        }
 
-      // 3. Lower Lip Dynamic Highlight & Contour
-      ctx.beginPath();
-      ctx.ellipse(mouthX, mouthY + oralH + 3.5, oralW * 0.88, 3.8 + openAmount * 0.15, 0, 0, Math.PI);
-      ctx.fillStyle = 'rgba(195, 96, 88, 0.88)';
-      ctx.fill();
-
-      // Soft lower lip specular reflection
-      ctx.beginPath();
-      ctx.ellipse(mouthX, mouthY + oralH + 4.2, oralW * 0.45, 1.4, 0, 0, Math.PI);
-      ctx.fillStyle = 'rgba(255, 210, 205, 0.42)';
-      ctx.fill();
-
-      // 4. Upper Lip Defined Bow
-      ctx.beginPath();
-      ctx.moveTo(mouthX - oralW - 4, mouthY);
-      ctx.quadraticCurveTo(mouthX - oralW * 0.35, mouthY - 2.8, mouthX - 3, mouthY - 1.2);
-      ctx.quadraticCurveTo(mouthX, mouthY - 2.4, mouthX + 3, mouthY - 1.2);
-      ctx.quadraticCurveTo(mouthX + oralW * 0.35, mouthY - 2.8, mouthX + oralW + 4, mouthY);
-      ctx.strokeStyle = 'rgba(148, 62, 58, 0.7)';
-      ctx.lineWidth = 1.8;
-      ctx.stroke();
-
-      ctx.restore();
+        warpedCtxRef.current.putImageData(warpedImageDataRef.current, 0, 0);
+        ctx.drawImage(warpedCanvasRef.current, cropX, cropY);
+      }
     }
 
     ctx.restore();
