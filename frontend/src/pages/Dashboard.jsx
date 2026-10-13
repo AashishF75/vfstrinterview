@@ -35,6 +35,11 @@ import {
   GraduationCap,
   ChevronRight,
   ExternalLink,
+  Cpu,
+  Workflow,
+  Binary,
+  ShieldCheck,
+  Zap,
 } from 'lucide-react';
 
 // Official Canonical Roles matching verified question bank specifications
@@ -85,6 +90,57 @@ const CANONICAL_FALLBACK_ROLES = [
     total_questions: 375,
   },
 ];
+
+// Curated visuals and metadata for each canonical engineering role
+const getRoleVisuals = (roleName) => {
+  const name = (roleName || '').toLowerCase();
+  if (name.includes('development') || name.includes('sde') || name.includes('software development')) {
+    return {
+      Icon: Terminal,
+      badgeText: 'Algorithmic & Backend',
+      tagline: 'High Volume Coding',
+      accent: 'cyan',
+    };
+  }
+  if (name.includes('product')) {
+    return {
+      Icon: Workflow,
+      badgeText: 'Architecture & Systems',
+      tagline: 'End-to-End Solutions',
+      accent: 'indigo',
+    };
+  }
+  if (name.includes('system')) {
+    return {
+      Icon: Cpu,
+      badgeText: 'Networks & Infra',
+      tagline: 'Core OS & Cloud',
+      accent: 'violet',
+    };
+  }
+  if (name.includes('test') || name.includes('quality')) {
+    return {
+      Icon: ShieldCheck,
+      badgeText: 'QA & Automation',
+      tagline: 'Robust Verification',
+      accent: 'emerald',
+    };
+  }
+  if (name.includes('associate')) {
+    return {
+      Icon: Binary,
+      badgeText: 'Fundamentals & Logic',
+      tagline: 'Entry-Level Track',
+      accent: 'cyan',
+    };
+  }
+  return {
+    Icon: Briefcase,
+    badgeText: 'Engineering Track',
+    tagline: 'Technical Assessment',
+    accent: 'cyan',
+  };
+};
 
 export default function Dashboard() {
   const { user, logout, hasRole } = useAuth();
@@ -250,7 +306,7 @@ export default function Dashboard() {
             {hasRole(['platform_admin', 'university_admin', 'department_admin']) && (
               <Link
                 to="/admin"
-                className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30 font-medium transition flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-indigo-400"
+                className="text-xs px-3.5 py-1.5 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 hover:text-white border border-indigo-500/30 font-medium transition-all duration-200 hover:-translate-y-0.5 flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
                 <Shield className="w-3.5 h-3.5" />
                 <span>Admin Console</span>
@@ -260,7 +316,7 @@ export default function Dashboard() {
             <button
               id="logout-button"
               onClick={handleLogout}
-              className="text-xs px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 transition flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="text-xs px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 hover:border-slate-600 transition-all duration-200 hover:-translate-y-0.5 flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-cyan-400"
               title="Sign out of interview workspace"
             >
               <LogOut className="w-3.5 h-3.5 text-slate-400" />
@@ -273,56 +329,75 @@ export default function Dashboard() {
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full flex-1">
         {/* Welcome Banner */}
-        <div className="mb-8 p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-[#0c1424] via-[#09101d] to-[#070b14] border border-slate-800/90 shadow-xl relative overflow-hidden">
-          {/* Subtle cyan glow ambient effect */}
-          <div className="absolute -top-24 -right-24 w-80 h-80 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="mb-8 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#0c1527] via-[#08101d] to-[#060a14] border border-slate-800/80 shadow-2xl relative overflow-hidden">
+          {/* Ambient glowing gradients */}
+          <div className="absolute -top-28 -right-28 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-24 -left-24 w-80 h-80 bg-violet-600/10 rounded-full blur-3xl pointer-events-none" />
 
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
-            <div className="space-y-2 max-w-2xl">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <div className="space-y-3 max-w-2xl">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="text-xs font-semibold px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center space-x-2 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                  </span>
                   <span>Authenticated Session Active</span>
                 </span>
-                <span className="text-xs font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/50 px-2 py-0.5 rounded-full">
+                <span className="text-xs font-mono text-cyan-300 bg-cyan-950/70 border border-cyan-800/60 px-3 py-1 rounded-full shadow-[0_0_12px_rgba(6,182,212,0.1)]">
                   ID: {user?.registration_number || user?.email}
                 </span>
               </div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-100 to-slate-300 tracking-tight">
                 Welcome, {user?.full_name || user?.email}
               </h1>
-              <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+              <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-xl">
                 Adaptive AI Mock Interview Platform for engineering placements. Real-time conceptual evaluation, live sandbox code execution, and university-aligned rubric assessments.
               </p>
             </div>
 
             {/* Quick Readiness Metrics */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 sm:gap-3 w-full lg:w-auto">
-              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800/80">
-                <div className="flex items-center space-x-1.5 text-cyan-400 text-xs font-medium mb-1">
-                  <BookOpen className="w-3.5 h-3.5" />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full lg:w-auto">
+              {/* Question Bank */}
+              <div className="group relative p-4 rounded-2xl bg-gradient-to-br from-[#0c1424] to-[#080d19] border border-slate-800/80 hover:border-cyan-500/50 hover:bg-[#0e172a] hover:-translate-y-1.5 hover:shadow-[0_12px_28px_-6px_rgba(6,182,212,0.25)] transition-all duration-300 ease-out overflow-hidden cursor-default">
+                <div className="absolute top-0 right-0 w-20 h-20 bg-cyan-500/10 rounded-full blur-xl pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                <div className="flex items-center space-x-2 text-cyan-400 text-xs font-semibold mb-1.5">
+                  <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 group-hover:scale-110 group-hover:rotate-3 transition-transform duration-300">
+                    <BookOpen className="w-4 h-4 text-cyan-400" />
+                  </div>
                   <span>Question Bank</span>
                 </div>
-                <div className="text-base sm:text-lg font-bold text-white font-mono">1,875</div>
-                <div className="text-[10px] text-slate-400">Official Questions</div>
+                <div className="text-xl sm:text-2xl font-extrabold text-white font-mono tracking-tight">1,875</div>
+                <div className="text-[11px] text-slate-400 group-hover:text-slate-300 transition-colors">Official Questions</div>
               </div>
 
-              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800/80">
-                <div className="flex items-center space-x-1.5 text-violet-400 text-xs font-medium mb-1">
-                  <BrainCircuit className="w-3.5 h-3.5" />
+              {/* Roles Covered */}
+              <div className="group relative p-4 rounded-2xl bg-gradient-to-br from-[#0c1424] to-[#080d19] border border-slate-800/80 hover:border-violet-500/50 hover:bg-[#0e162d] hover:-translate-y-1.5 hover:shadow-[0_12px_28px_-6px_rgba(139,92,246,0.25)] transition-all duration-300 ease-out overflow-hidden cursor-default">
+                <div className="absolute top-0 right-0 w-20 h-20 bg-violet-500/10 rounded-full blur-xl pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                <div className="flex items-center space-x-2 text-violet-400 text-xs font-semibold mb-1.5">
+                  <div className="p-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 group-hover:scale-110 group-hover:-rotate-3 transition-transform duration-300">
+                    <BrainCircuit className="w-4 h-4 text-violet-400" />
+                  </div>
                   <span>Roles Covered</span>
                 </div>
-                <div className="text-base sm:text-lg font-bold text-white font-mono">5 Canonical</div>
-                <div className="text-[10px] text-slate-400">125 Problem Sets</div>
+                <div className="text-xl sm:text-2xl font-extrabold text-white font-mono tracking-tight">5 Canonical</div>
+                <div className="text-[11px] text-slate-400 group-hover:text-slate-300 transition-colors">125 Problem Sets</div>
               </div>
 
-              <div className="col-span-2 sm:col-span-1 p-3 rounded-xl bg-slate-900/80 border border-slate-800/80">
-                <div className="flex items-center space-x-1.5 text-emerald-400 text-xs font-medium mb-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
+              {/* AI Evaluator */}
+              <div className="group relative p-4 rounded-2xl bg-gradient-to-br from-[#0c1424] to-[#080d19] border border-slate-800/80 hover:border-emerald-500/50 hover:bg-[#0a1820] hover:-translate-y-1.5 hover:shadow-[0_12px_28px_-6px_rgba(16,185,129,0.25)] transition-all duration-300 ease-out overflow-hidden cursor-default">
+                <div className="absolute top-0 right-0 w-20 h-20 bg-emerald-500/10 rounded-full blur-xl pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                <div className="flex items-center space-x-2 text-emerald-400 text-xs font-semibold mb-1.5">
+                  <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 group-hover:scale-110 transition-transform duration-300">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  </div>
                   <span>AI Evaluator</span>
                 </div>
-                <div className="text-base sm:text-lg font-bold text-white font-mono">Online</div>
-                <div className="text-[10px] text-slate-400">Gemini & Sandbox</div>
+                <div className="text-xl sm:text-2xl font-extrabold text-emerald-400 font-mono tracking-tight flex items-center space-x-1.5">
+                  <span>Online</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                </div>
+                <div className="text-[11px] text-slate-400 group-hover:text-slate-300 transition-colors">Gemini & Sandbox</div>
               </div>
             </div>
           </div>
@@ -330,14 +405,14 @@ export default function Dashboard() {
 
         {/* ROLE SELECTION & SELF-ENROLLMENT SECTION */}
         {user?.role === 'student' && (
-          <section className="mb-8 p-6 sm:p-7 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 shadow-xl relative overflow-hidden" aria-labelledby="role-selection-heading">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center justify-center">
-                  <Briefcase className="w-4 h-4" />
+          <section className="mb-8 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 shadow-2xl relative overflow-hidden" aria-labelledby="role-selection-heading">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600/20 to-indigo-600/20 text-cyan-400 border border-cyan-500/30 flex items-center justify-center shadow-lg shadow-cyan-950/40">
+                  <Briefcase className="w-5 h-5 text-cyan-400" />
                 </div>
                 <div>
-                  <h2 id="role-selection-heading" className="text-base sm:text-lg font-bold text-white">
+                  <h2 id="role-selection-heading" className="text-base sm:text-lg lg:text-xl font-bold text-white tracking-tight">
                     Select Target Job Role & Start Interview
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
@@ -345,28 +420,30 @@ export default function Dashboard() {
                   </p>
                 </div>
               </div>
-              <span className="self-start sm:self-center text-xs px-3 py-1 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-semibold tracking-wide flex items-center space-x-1.5 shrink-0">
+              <span className="self-start sm:self-center text-xs px-3.5 py-1.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-semibold tracking-wide flex items-center space-x-2 shrink-0 shadow-[0_0_15px_rgba(6,182,212,0.15)]">
                 <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
                 <span>Verified Question Bank: 1,875 Questions</span>
               </span>
             </div>
 
             {roleError && (
-              <div className="mb-5 p-3.5 rounded-xl bg-rose-950/50 border border-rose-800/60 text-rose-300 text-xs flex items-center space-x-2.5 shadow-md">
+              <div className="mb-6 p-4 rounded-xl bg-rose-950/50 border border-rose-800/60 text-rose-300 text-xs flex items-center space-x-3 shadow-md">
                 <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
                 <span className="font-medium">{roleError}</span>
               </div>
             )}
 
             {rolesLoading && roles.length === 0 ? (
-              <div className="py-12 text-center text-xs text-slate-400 flex items-center justify-center space-x-2">
+              <div className="py-16 text-center text-xs text-slate-400 flex items-center justify-center space-x-2">
                 <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
                 <span>Loading available job roles...</span>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6" role="radiogroup" aria-label="Job role selection">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mb-6" role="radiogroup" aria-label="Job role selection">
                 {roles.map((r) => {
                   const isSelected = selectedRole === r.role_name;
+                  const Visual = getRoleVisuals(r.role_name);
+                  const VisualIcon = Visual.Icon;
                   return (
                     <div
                       key={r.role_id}
@@ -380,40 +457,87 @@ export default function Dashboard() {
                           setSelectedRole(r.role_name);
                         }
                       }}
-                      className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-all duration-200 flex flex-col justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09101d] ${
+                      className={`group relative p-5 sm:p-6 rounded-2xl border cursor-pointer transition-all duration-300 ease-out flex flex-col justify-between overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#070b14] ${
                         isSelected
-                          ? 'bg-gradient-to-br from-[#0c2238] via-[#091a2e] to-[#071322] border-cyan-400/90 shadow-xl shadow-cyan-950/40 ring-1 ring-cyan-400/60'
-                          : 'bg-[#0b1220]/80 border-slate-800/90 hover:border-slate-700 hover:bg-[#0e172a] shadow-sm'
+                          ? 'bg-gradient-to-br from-[#0c2644] via-[#091e38] to-[#071324] border-cyan-400/90 shadow-[0_0_30px_-5px_rgba(34,211,238,0.35),0_14px_30px_-5px_rgba(6,182,212,0.25)] ring-1 ring-cyan-400/60 hover:-translate-y-1.5 hover:shadow-[0_0_35px_-4px_rgba(34,211,238,0.45),0_18px_36px_-6px_rgba(6,182,212,0.3)]'
+                          : 'bg-[#091122]/85 border-slate-800/90 hover:border-cyan-500/50 hover:bg-[#0e1b36] hover:-translate-y-1.5 hover:shadow-[0_16px_36px_-8px_rgba(6,182,212,0.25),0_0_20px_-4px_rgba(139,92,246,0.18)]'
                       }`}
                     >
-                      <div>
+                      {/* Iridescent subtle gradient sheen on hover / selection */}
+                      <div
+                        className={`absolute inset-0 rounded-2xl bg-gradient-to-br from-cyan-500/12 via-transparent to-violet-500/12 pointer-events-none transition-opacity duration-300 ${
+                          isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                        }`}
+                      />
+                      <div
+                        className={`absolute -top-12 -right-12 w-32 h-32 rounded-full blur-2xl pointer-events-none transition-opacity duration-300 ${
+                          isSelected ? 'bg-cyan-500/25 opacity-100' : 'bg-cyan-500/15 opacity-0 group-hover:opacity-100'
+                        }`}
+                      />
+
+                      <div className="relative z-10">
                         {/* Header & Obvious Selected Indicator */}
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <span className={`font-bold text-sm tracking-tight ${isSelected ? 'text-white' : 'text-slate-200'}`}>
-                            {r.role_name}
-                          </span>
+                        <div className="flex items-start justify-between gap-3 mb-3.5">
+                          <div
+                            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all duration-300 ${
+                              isSelected
+                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/50 shadow-[0_0_15px_rgba(6,182,212,0.3)]'
+                                : 'bg-slate-800/80 text-slate-300 border border-slate-700/60 group-hover:border-cyan-500/40 group-hover:text-cyan-300 group-hover:shadow-[0_0_12px_rgba(6,182,212,0.2)]'
+                            }`}
+                          >
+                            <VisualIcon className="w-5 h-5 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-1" />
+                          </div>
+
                           {isSelected ? (
-                            <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-400/60 text-[10px] font-bold uppercase tracking-wider flex items-center space-x-1 shrink-0">
-                              <Check className="w-3 h-3 text-cyan-400" />
+                            <span className="px-2.5 py-1 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-400/70 text-[10px] font-bold uppercase tracking-wider flex items-center space-x-1.5 shadow-[0_0_12px_rgba(6,182,212,0.3)] shrink-0">
+                              <Check className="w-3.5 h-3.5 text-cyan-400 stroke-[3]" />
                               <span>SELECTED</span>
                             </span>
                           ) : (
-                            <span className="w-4 h-4 rounded-full border border-slate-700 shrink-0 mt-0.5" />
+                            <span className="w-5 h-5 rounded-full border border-slate-700 group-hover:border-cyan-400/70 group-hover:scale-110 transition-all duration-200 shrink-0 flex items-center justify-center mt-1">
+                              <span className="w-2 h-2 rounded-full bg-transparent group-hover:bg-cyan-400/50 transition-colors" />
+                            </span>
                           )}
                         </div>
 
+                        {/* Role Title & Track Badge */}
+                        <h3 className={`font-bold text-base sm:text-lg tracking-tight transition-colors duration-200 ${isSelected ? 'text-white' : 'text-slate-100 group-hover:text-white'}`}>
+                          {r.role_name}
+                        </h3>
+                        <div className="mt-1 mb-2.5">
+                          <span
+                            className={`inline-block text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 rounded-md transition-colors ${
+                              isSelected
+                                ? 'bg-cyan-950/80 text-cyan-300 border border-cyan-800/60'
+                                : 'bg-slate-800/80 text-slate-400 border border-slate-700/60 group-hover:border-cyan-800/60 group-hover:text-cyan-300'
+                            }`}
+                          >
+                            {Visual.badgeText}
+                          </span>
+                        </div>
+
                         {/* Description */}
-                        <p className="text-[11px] text-slate-400 mb-4 leading-relaxed">
+                        <p className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors leading-relaxed mb-5">
                           {r.description}
                         </p>
                       </div>
 
                       {/* Question Bank Breakdown Footer */}
-                      <div className="pt-2.5 border-t border-slate-800/70 flex items-center justify-between text-[10px] font-mono text-slate-400">
-                        <span className="font-semibold text-slate-300">
+                      <div
+                        className={`pt-3.5 border-t flex items-center justify-between text-xs transition-colors duration-200 relative z-10 ${
+                          isSelected ? 'border-cyan-800/60' : 'border-slate-800/80 group-hover:border-slate-700/80'
+                        }`}
+                      >
+                        <span className="font-mono text-slate-300 font-medium">
                           {r.total_sets || 25} Sets • {r.total_questions || 375} Qs
                         </span>
-                        <span className="text-cyan-400 font-sans font-medium bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-900/60">
+                        <span
+                          className={`text-[11px] font-medium px-2 py-0.5 rounded border transition-colors ${
+                            isSelected
+                              ? 'bg-cyan-950/80 text-cyan-300 border-cyan-800/70'
+                              : 'bg-slate-900/80 text-cyan-400/90 border-slate-800/80 group-hover:border-cyan-900/80'
+                          }`}
+                        >
                           13 Concept + 2 Code
                         </span>
                       </div>
@@ -424,23 +548,24 @@ export default function Dashboard() {
             )}
 
             {/* Action Bar */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-800/80 bg-[#080d19]/60 p-4 rounded-xl border border-slate-800/50">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-5 pb-5 px-6 rounded-2xl bg-gradient-to-r from-[#080e1c]/90 via-[#0a1426]/90 to-[#080e1c]/90 border border-slate-800/80 shadow-lg mt-3">
               <div className="text-xs text-slate-300 flex items-center space-x-2">
                 <span className="text-slate-400">Active Choice:</span>
-                <strong className="text-cyan-300 font-bold px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/50">
+                <strong className="text-cyan-300 font-bold px-3 py-1 rounded-lg bg-cyan-950/80 border border-cyan-700/60 font-mono shadow-[0_0_12px_rgba(6,182,212,0.15)]">
                   {selectedRole}
                 </strong>
                 <span className="hidden md:inline text-slate-400">• 5 Adaptive Questions Target</span>
               </div>
 
               <button
+                id="start-interview-button"
                 onClick={() => handleStartRoleInterview(selectedRole)}
                 disabled={roleStarting || !selectedRole}
-                className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 via-indigo-600 to-violet-600 hover:from-cyan-500 hover:via-indigo-500 hover:to-violet-500 text-white text-xs font-bold shadow-lg shadow-cyan-600/20 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09101d]"
+                className="w-full sm:w-auto px-7 py-3 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:via-indigo-500 hover:to-violet-500 text-white text-xs sm:text-sm font-bold shadow-[0_0_25px_rgba(6,182,212,0.35)] hover:shadow-[0_0_35px_rgba(6,182,212,0.55)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99] transition-all duration-300 flex items-center justify-center space-x-2.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09101d]"
               >
                 {roleStarting ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    <Loader2 className="w-4 h-4 animate-spin mr-1 text-cyan-300" />
                     <span>Initializing Interview Session...</span>
                   </>
                 ) : (
@@ -456,14 +581,14 @@ export default function Dashboard() {
 
         {/* STUDENT ASSIGNED INTERVIEWS SECTION */}
         {user?.role === 'student' && (
-          <section className="mb-8 p-6 sm:p-7 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 shadow-xl" aria-labelledby="university-assigned-heading">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center">
-                  <Calendar className="w-4 h-4" />
+          <section className="mb-8 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 shadow-2xl relative overflow-hidden" aria-labelledby="university-assigned-heading">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600/20 to-violet-600/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center shadow-lg shadow-indigo-950/40">
+                  <Calendar className="w-5 h-5 text-indigo-400" />
                 </div>
                 <div>
-                  <h2 id="university-assigned-heading" className="text-base sm:text-lg font-bold text-white">
+                  <h2 id="university-assigned-heading" className="text-base sm:text-lg lg:text-xl font-bold text-white tracking-tight">
                     My University-Assigned Interviews
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
@@ -471,62 +596,62 @@ export default function Dashboard() {
                   </p>
                 </div>
               </div>
-              <div className="flex items-center space-x-2">
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 font-semibold font-mono">
+              <div className="flex items-center space-x-2.5">
+                <span className="text-xs px-3 py-1 rounded-full bg-slate-800/80 text-slate-300 border border-slate-700/80 font-semibold font-mono shadow-sm">
                   {assignments.length} Total
                 </span>
                 <button
                   onClick={fetchStudentAssignments}
                   disabled={assignmentsLoading}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-cyan-400"
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
                   title="Refresh my assignments"
                 >
-                  <RefreshCw className={`w-4 h-4 ${assignmentsLoading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-4 h-4 ${assignmentsLoading ? 'animate-spin text-cyan-400' : ''}`} />
                 </button>
               </div>
             </div>
 
             {assignmentError && (
-              <div className="mb-4 p-3 rounded-xl bg-rose-950/50 border border-rose-800/60 text-rose-300 text-xs flex items-center space-x-2">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                <span>{assignmentError}</span>
+              <div className="mb-5 p-4 rounded-xl bg-rose-950/50 border border-rose-800/60 text-rose-300 text-xs flex items-center space-x-3 shadow-md">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
+                <span className="font-medium">{assignmentError}</span>
               </div>
             )}
 
             {assignmentsLoading && assignments.length === 0 ? (
-              <div className="text-center py-10 text-slate-400 text-xs flex items-center justify-center space-x-2">
+              <div className="text-center py-14 text-slate-400 text-xs flex items-center justify-center space-x-2">
                 <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
                 <span>Loading assigned interviews...</span>
               </div>
             ) : assignments.length === 0 ? (
-              <div className="text-center py-10 border border-dashed border-slate-800/80 rounded-xl bg-slate-900/30">
-                <Calendar className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-                <p className="text-xs font-semibold text-slate-300">No scheduled university interviews currently pending</p>
-                <p className="text-[11px] text-slate-500 mt-1 max-w-sm mx-auto">
+              <div className="text-center py-12 border border-dashed border-slate-800/80 rounded-2xl bg-slate-900/30 p-6">
+                <Calendar className="w-9 h-9 text-slate-600 mx-auto mb-2.5" />
+                <p className="text-xs sm:text-sm font-semibold text-slate-300">No scheduled university interviews currently pending</p>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto leading-relaxed">
                   When department administrators assign an interview to your registration number, it will appear here. You can also self-enroll in mock interviews above.
                 </p>
               </div>
             ) : (
-              <div className="space-y-3.5">
+              <div className="space-y-4">
                 {assignments.map((assign) => (
                   <div
                     key={assign.assignment_id}
-                    className="p-5 rounded-xl bg-[#0b1220]/80 border border-slate-800/80 hover:border-slate-700 transition flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    className="p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-[#0a1120]/90 to-[#070c17]/90 border border-slate-800/80 hover:border-slate-700 hover:bg-[#0c152b] hover:-translate-y-0.5 hover:shadow-[0_10px_25px_-5px_rgba(0,0,0,0.5)] transition-all duration-300 flex flex-col md:flex-row md:items-center justify-between gap-4"
                   >
-                    <div className="space-y-2 max-w-2xl">
+                    <div className="space-y-2.5 max-w-2xl">
                       <div className="flex flex-wrap items-center gap-2.5">
-                        <span className="font-bold text-white text-sm sm:text-base">{assign.interview_title}</span>
+                        <span className="font-bold text-white text-sm sm:text-base tracking-tight">{assign.interview_title}</span>
                         <span
-                          className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full border ${
+                          className={`text-[10px] uppercase font-bold px-2.5 py-0.5 rounded-full border shadow-sm ${
                             assign.status === 'assigned'
-                              ? 'bg-amber-950/60 text-amber-300 border-amber-800/50'
+                              ? 'bg-amber-950/60 text-amber-300 border-amber-800/60 shadow-[0_0_10px_rgba(245,158,11,0.15)]'
                               : assign.status === 'accepted'
-                              ? 'bg-blue-950/60 text-blue-300 border-blue-800/50'
+                              ? 'bg-teal-950/60 text-teal-300 border-teal-800/60 shadow-[0_0_10px_rgba(20,184,166,0.15)]'
                               : assign.status === 'in_progress'
-                              ? 'bg-indigo-950/60 text-indigo-300 border-indigo-800/50'
+                              ? 'bg-indigo-950/60 text-indigo-300 border-indigo-800/60 shadow-[0_0_10px_rgba(99,102,241,0.15)]'
                               : assign.status === 'completed'
-                              ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/50'
-                              : 'bg-rose-950/60 text-rose-400 border-rose-800/50'
+                              ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
+                              : 'bg-rose-950/60 text-rose-400 border-rose-800/60'
                           }`}
                         >
                           {assign.status === 'assigned' ? 'Action Required: Pending Acceptance' : assign.status}
@@ -534,11 +659,11 @@ export default function Dashboard() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-3.5 text-xs text-slate-400">
-                        <span className="flex items-center space-x-1">
+                        <span className="flex items-center space-x-1.5">
                           <Calendar className="w-3.5 h-3.5 text-indigo-400" />
                           <span>{new Date(assign.scheduled_start_time).toLocaleString()}</span>
                         </span>
-                        <span className="flex items-center space-x-1">
+                        <span className="flex items-center space-x-1.5">
                           <Clock className="w-3.5 h-3.5 text-violet-400" />
                           <span>Duration: {assign.duration_minutes} mins</span>
                         </span>
@@ -548,7 +673,7 @@ export default function Dashboard() {
                       </div>
 
                       {assign.interview_instructions && (
-                        <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800/60 text-xs text-slate-300 font-mono mt-1 whitespace-pre-line line-clamp-2">
+                        <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/60 text-xs text-slate-300 font-mono mt-1 whitespace-pre-line line-clamp-2">
                           {assign.interview_instructions}
                         </div>
                       )}
@@ -560,10 +685,10 @@ export default function Dashboard() {
                         <button
                           onClick={() => handleAcceptAssignment(assign.assignment_id)}
                           disabled={actionLoadingId === assign.assignment_id}
-                          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-1.5 disabled:opacity-50"
+                          className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 hover:shadow-indigo-600/50 hover:-translate-y-0.5 transition-all duration-200 flex items-center space-x-1.5 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                         >
                           {actionLoadingId === assign.assignment_id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <Loader2 className="w-4 h-4 animate-spin text-white" />
                           ) : (
                             <Check className="w-4 h-4" />
                           )}
@@ -574,7 +699,7 @@ export default function Dashboard() {
                       {assign.status === 'accepted' && (
                         <button
                           onClick={() => navigate(`/interview/${assign.assignment_id}`)}
-                          className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 transition flex items-center space-x-1.5"
+                          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/30 hover:shadow-emerald-600/50 hover:-translate-y-0.5 transition-all duration-200 flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                         >
                           <Play className="w-4 h-4 fill-white" />
                           <span>Enter Interview Room</span>
@@ -584,7 +709,7 @@ export default function Dashboard() {
                       {assign.status === 'in_progress' && (
                         <button
                           onClick={() => navigate(`/interview/${assign.assignment_id}`)}
-                          className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition flex items-center space-x-1.5"
+                          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 hover:shadow-indigo-600/50 hover:-translate-y-0.5 transition-all duration-200 flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                         >
                           <Play className="w-4 h-4 fill-white" />
                           <span>Resume Interview</span>
@@ -594,7 +719,7 @@ export default function Dashboard() {
                       {assign.status === 'completed' && (
                         <button
                           onClick={() => navigate(`/interview/${assign.assignment_id}`)}
-                          className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-semibold transition flex items-center space-x-1.5"
+                          className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white border border-indigo-500/30 hover:border-indigo-400/60 hover:-translate-y-0.5 text-xs font-semibold transition-all duration-200 flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                         >
                           <Award className="w-4 h-4 text-amber-400" />
                           <span>View Scorecard</span>
@@ -611,7 +736,8 @@ export default function Dashboard() {
         {/* User Profile Specifications & Dev Probes */}
         <div className={`grid grid-cols-1 ${import.meta.env.DEV ? 'lg:grid-cols-3' : 'max-w-2xl'} gap-6 mb-8`}>
           {/* User Metadata Card */}
-          <div className="p-6 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 flex flex-col justify-between shadow-xl">
+          <div className="p-6 sm:p-7 rounded-3xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 flex flex-col justify-between shadow-2xl relative overflow-hidden">
+            <div className="absolute -top-16 -right-16 w-40 h-40 bg-cyan-500/5 rounded-full blur-2xl pointer-events-none" />
             <div>
               <h3 className="text-sm font-bold text-white mb-4 flex items-center space-x-2">
                 <User className="w-4 h-4 text-cyan-400" />
@@ -665,7 +791,7 @@ export default function Dashboard() {
 
           {/* Interactive Server Authorization Probes Card - Development Only */}
           {import.meta.env.DEV && (
-            <div className="lg:col-span-2 p-6 rounded-2xl bg-[#09101d]/90 border border-slate-800/90 shadow-xl">
+            <div className="lg:col-span-2 p-6 sm:p-7 rounded-3xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 shadow-2xl relative overflow-hidden">
               <h3 className="text-sm font-bold text-white mb-2 flex items-center space-x-2">
                 <Shield className="w-4 h-4 text-indigo-400" />
                 <span>Live Server-Side Authorization Verification (Dev Diagnostics)</span>
