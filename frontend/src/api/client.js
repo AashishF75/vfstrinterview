@@ -616,6 +616,33 @@ export const getSessionScorecard = async (sessionId) => {
   }
 };
 
+export const getStudentPerformanceReport = async (assignmentId) => {
+  try {
+    const response = await apiClient.get(`/api/student/interviews/reports/${assignmentId}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to retrieve performance report',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const getSessionPerformanceReport = async (sessionId) => {
+  try {
+    const response = await apiClient.get(`/api/interview-rooms/sessions/${sessionId}/report`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to retrieve session report',
+      status: error.response?.status,
+    };
+  }
+};
+
+
 // Level 1 Proctoring Telemetry APIs
 export const recordProctoringEvents = async (sessionId, events) => {
   try {

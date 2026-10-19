@@ -187,6 +187,7 @@ class ResponseSummary(BaseModel):
     question_index: int
     question_text: str
     difficulty: QuestionDifficulty
+    topic: Optional[str] = "Technical Assessment"
     answer_text: str
     evaluation_score: float
     score: Optional[float] = None
@@ -217,5 +218,68 @@ class ScorecardResponse(BaseModel):
     disclaimer: str
     completed_at: datetime
     responses: List[ResponseSummary] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TopicPerformanceItem(BaseModel):
+    topic: str
+    questions_tested: int
+    average_score: float
+    min_score: float
+    max_score: float
+    category: str  # "strength" | "moderate" | "weakness"
+    is_limited_evidence: bool = False
+    evidence_level: str = "sufficient"  # "limited" | "moderate" | "sufficient"
+    evidence_note: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ActionablePriorityItem(BaseModel):
+    topic: str
+    priority: str  # "high" | "medium" | "low"
+    average_score: float
+    reason: str
+    actionable_steps: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VideoRecommendationItem(BaseModel):
+    resource_id: str
+    title: str
+    provider: str
+    topic: str
+    video_url: str
+    difficulty_level: str
+    reason: str
+    watched: bool = False
+    is_verified: bool = True
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StudentPerformanceReportResponse(BaseModel):
+    report_id: str
+    assignment_id: str
+    session_id: str
+    interview_id: str
+    interview_title: str
+    selected_role: Optional[str] = None
+    student_registration_number: str
+    student_email: Optional[str] = None
+    overall_score: float
+    percentage_score: float
+    performance_level: str
+    summary_feedback: str
+    evaluator_mode: str
+    difficulty_progression: List[str] = Field(default_factory=list)
+    completed_at: datetime
+    topic_breakdown: List[TopicPerformanceItem] = Field(default_factory=list)
+    actionable_priorities: List[ActionablePriorityItem] = Field(default_factory=list)
+    video_recommendations: List[VideoRecommendationItem] = Field(default_factory=list)
+    responses: List[ResponseSummary] = Field(default_factory=list)
+    disclaimer: str
 
     model_config = ConfigDict(from_attributes=True)

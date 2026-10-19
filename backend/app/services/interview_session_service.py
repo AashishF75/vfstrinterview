@@ -19,8 +19,13 @@ from app.models.interview_session import (
     SubmitAnswerResponse,
     ScorecardResponse,
     ResponseSummary,
+    TopicPerformanceItem,
+    ActionablePriorityItem,
+    VideoRecommendationItem,
+    StudentPerformanceReportResponse,
     utc_now,
 )
+from app.services.learning_resources import match_video_recommendations
 from app.models.interview import AssignmentStatus, InterviewStatus
 from app.models.user import UserInDB, UserRole
 from app.services.ai_provider import (
@@ -94,6 +99,59 @@ def _ensure_utc(dt: Any) -> datetime:
             logger.warning("Failed to parse datetime string '%s', falling back to utc_now", dt)
             return utc_now()
     return utc_now()
+
+
+COMMON_TECH_ACRONYMS: Dict[str, str] = {
+    "SQL": "SQL",
+    "OS": "OS",
+    "OOP": "OOP",
+    "DBMS": "DBMS",
+    "TCP/IP": "TCP/IP",
+    "TCP": "TCP",
+    "IP": "IP",
+    "UDP": "UDP",
+    "DSA": "DSA",
+    "API": "API",
+    "REST": "REST",
+    "QA": "QA",
+    "CPU": "CPU",
+    "HTML": "HTML",
+    "CSS": "CSS",
+    "AI": "AI",
+    "ML": "ML",
+    "CI/CD": "CI/CD",
+}
+
+
+def _format_topic_name(raw_topic: Optional[str]) -> str:
+    """
+    Normalizes topic names preserving common industry acronyms (e.g. SQL, OS, OOP, DBMS, TCP/IP, DSA, API, REST, QA).
+    Avoids indiscriminate .title() mutations that transform 'SQL' into 'Sql'.
+    """
+    cleaned = (raw_topic or "Technical Assessment").strip()
+    if not cleaned:
+        return "Technical Assessment"
+
+    upper_cleaned = cleaned.upper()
+    if upper_cleaned in COMMON_TECH_ACRONYMS:
+        return COMMON_TECH_ACRONYMS[upper_cleaned]
+
+    # Process multi-word topics word-by-word
+    words = cleaned.split()
+    formatted_words: List[str] = []
+    for w in words:
+        clean_w = w.strip()
+        upper_w = clean_w.upper()
+        if upper_w in COMMON_TECH_ACRONYMS:
+            formatted_words.append(COMMON_TECH_ACRONYMS[upper_w])
+        elif clean_w.isupper() and len(clean_w) <= 4:
+            formatted_words.append(clean_w)
+        elif clean_w.islower():
+            formatted_words.append(clean_w.capitalize())
+        else:
+            formatted_words.append(clean_w)
+
+    return " ".join(formatted_words)
 
 
 class InterviewSessionService:
@@ -1044,6 +1102,7 @@ class InterviewSessionService:
                 question_index=r["question_index"],
                 question_text=r["question_text"],
                 difficulty=QuestionDifficulty(r["difficulty"]),
+                topic=r.get("topic", "Technical Assessment"),
                 answer_text=r["answer_text"],
                 evaluation_score=r["evaluation_score"],
                 score=r["evaluation_score"],
@@ -1186,3 +1245,284 @@ class InterviewSessionService:
             "evaluator_mode": provider.get_mode().value,
         }
 
+    @staticmethod
+    async def get_performance_report(
+        db: AsyncIOMotorDatabase,
+        assignment_id: str,
+        user: UserInDB,
+        target_session_id: Optional[str] = None,
+    ) -> StudentPerformanceReportResponse:
+        """
+        Retrieves a comprehensive, evidence-grounded performance report for a completed assignment:
+        - Strictly enforces student ownership (cross-student access blocked with 403 Forbidden).
+        - Allows faculty and administrators institutional access.
+        - Calculates topic-wise scores and question counts.
+        - Labels single-question topics honestly as limited evidence.
+        - Generates actionable preparation priorities.
+        - Recommends verified educational videos mapped directly to demonstrated deficits.
+        """
+        clean_reg = (user.registration_number or "").strip().upper()
+        asgn_call = db[ASSIGNMENTS_COLLECTION].find_one({"assignment_id": assignment_id})
+        assignment = await asgn_call if hasattr(asgn_call, "__await__") else asgn_call
+        if not assignment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Interview assignment '{assignment_id}' was not found",
+            )
+
+        if user.role == UserRole.STUDENT:
+            if not clean_reg:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Student account does not have a verified registration number linked.",
+                )
+            if assignment.get("student_registration_number") != clean_reg:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You are not authorized to view another student's performance report",
+                )
+        elif user.role not in [
+            UserRole.PLATFORM_ADMIN,
+            UserRole.UNIVERSITY_ADMIN,
+            UserRole.DEPARTMENT_ADMIN,
+            UserRole.FACULTY,
+        ]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions to access interview performance report",
+            )
+
+        if target_session_id:
+            sess_call = db[SESSIONS_COLLECTION].find_one({"session_id": target_session_id})
+            session = await sess_call if hasattr(sess_call, "__await__") else sess_call
+            if not session or session.get("assignment_id") != assignment_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Interview session '{target_session_id}' not found for assignment '{assignment_id}'",
+                )
+            if session.get("session_status") != SessionStatus.COMPLETED.value:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Interview session '{target_session_id}' is still in progress. The performance report is available upon interview completion.",
+                )
+        else:
+            # Locate completed session
+            cursor = db[SESSIONS_COLLECTION].find({
+                "assignment_id": assignment_id,
+                "session_status": SessionStatus.COMPLETED.value,
+            })
+            if hasattr(cursor, "sort") and callable(cursor.sort):
+                cursor = cursor.sort("completed_at", pymongo.DESCENDING)
+            if hasattr(cursor, "to_list"):
+                res = cursor.to_list(length=5)
+                completed_sessions = await res if hasattr(res, "__await__") else res
+            elif hasattr(cursor, "__await__"):
+                completed_sessions = await cursor
+            else:
+                completed_sessions = cursor
+
+            if not completed_sessions or not isinstance(completed_sessions, list):
+                any_sess_call = db[SESSIONS_COLLECTION].find_one({"assignment_id": assignment_id})
+                any_sess = await any_sess_call if hasattr(any_sess_call, "__await__") else any_sess_call
+                if any_sess and any_sess.get("session_status") == SessionStatus.IN_PROGRESS.value:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Interview session is still in progress. The performance report is available upon interview completion.",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No completed interview session found for assignment '{assignment_id}'.",
+                )
+
+            session = completed_sessions[0]
+
+        session_id = session["session_id"]
+
+        sc_call = db[SCORECARDS_COLLECTION].find_one({"session_id": session_id}, {"_id": 0})
+        scorecard = await sc_call if hasattr(sc_call, "__await__") else sc_call
+        if not scorecard:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Final scorecard for this interview session has not yet been generated.",
+            )
+
+        int_call = db[INTERVIEWS_COLLECTION].find_one({"interview_id": assignment["interview_id"]})
+        interview = await int_call if hasattr(int_call, "__await__") else int_call
+        interview_title = interview.get("title") if interview else "Adaptive Placement Mock Interview"
+        selected_role = assignment.get("selected_role") or session.get("selected_role")
+
+        cursor = db[RESPONSES_COLLECTION].find({"session_id": session_id}, {"_id": 0})
+        if hasattr(cursor, "sort") and callable(cursor.sort):
+            cursor = cursor.sort("question_index", pymongo.ASCENDING)
+        if hasattr(cursor, "to_list"):
+            res = cursor.to_list(length=100)
+            raw_responses = await res if hasattr(res, "__await__") else res
+        elif hasattr(cursor, "__await__"):
+            raw_responses = await cursor
+        else:
+            raw_responses = cursor
+        if not isinstance(raw_responses, list):
+            raw_responses = []
+
+        response_summaries = []
+        for r in raw_responses:
+            response_summaries.append(
+                ResponseSummary(
+                    question_index=r["question_index"],
+                    question_text=r["question_text"],
+                    difficulty=QuestionDifficulty(r["difficulty"]),
+                    topic=r.get("topic", "Technical Assessment"),
+                    answer_text=r["answer_text"],
+                    evaluation_score=r["evaluation_score"],
+                    score=r["evaluation_score"],
+                    feedback=r["evaluation_feedback"],
+                    strengths=r.get("strengths", []),
+                    improvements=r.get("improvements", []),
+                    difficulty_adjustment_rationale=r.get("difficulty_adjustment_rationale", ""),
+                    question_type=r.get("question_type", "conceptual"),
+                    language=r.get("language"),
+                    code_execution_summary=r.get("code_execution_summary"),
+                )
+            )
+
+        # Aggregate topic-wise performance
+        topic_groups: Dict[str, List[float]] = {}
+        topic_feedback: Dict[str, List[str]] = {}
+        for r in raw_responses:
+            topic_name = _format_topic_name(r.get("topic"))
+            topic_groups.setdefault(topic_name, []).append(float(r.get("evaluation_score", 0.0)))
+            if r.get("improvements"):
+                topic_feedback.setdefault(topic_name, []).extend(r["improvements"])
+
+        topic_items: List[TopicPerformanceItem] = []
+        actionable_priorities: List[ActionablePriorityItem] = []
+
+        for t_name, scores in topic_groups.items():
+            q_count = len(scores)
+            avg = round(sum(scores) / max(1, q_count), 1)
+            min_s = round(min(scores), 1)
+            max_s = round(max(scores), 1)
+
+            is_limited = q_count < 2
+            if is_limited:
+                evidence_lvl = "limited"
+                note = "Limited evidence: Evaluated based on 1 question. Consider this an initial practice indicator rather than a conclusive skill assessment."
+            elif q_count == 2:
+                evidence_lvl = "moderate"
+                note = "Evaluated across 2 questions. Representative sample."
+            else:
+                evidence_lvl = "sufficient"
+                note = f"Evaluated across {q_count} questions. Strong evidence basis."
+
+            if avg >= 7.0:
+                cat = "strength"
+            elif avg >= 5.0:
+                cat = "moderate"
+            else:
+                cat = "weakness"
+
+            topic_items.append(
+                TopicPerformanceItem(
+                    topic=t_name,
+                    questions_tested=q_count,
+                    average_score=avg,
+                    min_score=min_s,
+                    max_score=max_s,
+                    category=cat,
+                    is_limited_evidence=is_limited,
+                    evidence_level=evidence_lvl,
+                    evidence_note=note,
+                )
+            )
+
+            # Build actionable priorities for weak topics (< 6.5) or topics with improvement suggestions
+            if avg < 6.5 or topic_feedback.get(t_name):
+                priority_lvl = "high" if avg < 5.0 else "medium"
+                specific_gap = f" Evaluator notes: '{topic_feedback[t_name][0]}'" if topic_feedback.get(t_name) else ""
+                reason_text = f"Average score of {avg}/10 across {q_count} question(s).{specific_gap}"
+
+                steps = [
+                    f"Review core technical principles and standard architecture definitions for {t_name}.",
+                    "Practice structured answers focusing on system trade-offs, protocols, and implementation constraints.",
+                    "Simulate timed scenario-based interview questions to reinforce recall under pressure.",
+                ]
+                actionable_priorities.append(
+                    ActionablePriorityItem(
+                        topic=t_name,
+                        priority=priority_lvl,
+                        average_score=avg,
+                        reason=reason_text,
+                        actionable_steps=steps,
+                    )
+                )
+
+        topic_items.sort(key=lambda x: x.average_score)
+        actionable_priorities.sort(key=lambda x: (0 if x.priority == "high" else 1, x.average_score))
+
+        # Match verified learning video recommendations
+        topic_dicts = [t.model_dump() for t in topic_items]
+        matched_videos_raw = match_video_recommendations(
+            topic_breakdown=topic_dicts,
+            selected_role=selected_role,
+            responses=raw_responses,
+            max_recommendations=4,
+        )
+        video_items = [VideoRecommendationItem(**v) for v in matched_videos_raw]
+
+        completed_timestamp = session.get("completed_at", session.get("updated_at", utc_now()))
+
+        return StudentPerformanceReportResponse(
+            report_id=f"rep-{session_id[:12]}",
+            assignment_id=assignment_id,
+            session_id=session_id,
+            interview_id=assignment["interview_id"],
+            interview_title=interview_title,
+            selected_role=selected_role,
+            student_registration_number=assignment["student_registration_number"],
+            student_email=assignment.get("student_email"),
+            overall_score=scorecard["overall_score"],
+            percentage_score=scorecard["percentage_score"],
+            performance_level=scorecard["performance_level"],
+            summary_feedback=scorecard["summary_feedback"],
+            evaluator_mode=scorecard.get("evaluator_mode", "mock_rule_engine"),
+            difficulty_progression=scorecard.get("difficulty_progression", []),
+            completed_at=completed_timestamp,
+            topic_breakdown=topic_items,
+            actionable_priorities=actionable_priorities,
+            video_recommendations=video_items,
+            responses=response_summaries,
+            disclaimer=scorecard.get(
+                "disclaimer",
+                "Evaluations reflect automated technical rubrics and adaptive difficulty thresholds. Recommendations are tailored based on demonstrated performance evidence and do not imply automated viewing history."
+            ),
+        )
+
+    @staticmethod
+    async def get_performance_report_by_session(
+        db: AsyncIOMotorDatabase,
+        session_id: str,
+        user: UserInDB,
+    ) -> StudentPerformanceReportResponse:
+        """
+        Helper retrieving a performance report using session_id.
+        Strictly verifies that the requested session is completed before delegating,
+        preventing an in-progress session from returning an earlier completed session's report.
+        """
+        sess_call = db[SESSIONS_COLLECTION].find_one({"session_id": session_id})
+        session = await sess_call if hasattr(sess_call, "__await__") else sess_call
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Interview session '{session_id}' not found",
+            )
+        if session.get("session_status") != SessionStatus.COMPLETED.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Interview session '{session_id}' is still in progress. The performance report is available upon interview completion.",
+            )
+        return await InterviewSessionService.get_performance_report(
+            db=db,
+            assignment_id=session["assignment_id"],
+            user=user,
+            target_session_id=session_id,
+        )

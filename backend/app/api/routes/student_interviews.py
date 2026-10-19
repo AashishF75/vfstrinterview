@@ -7,14 +7,14 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
 from app.core.database import get_interview_database
-from app.api.deps import require_roles
+from app.api.deps import require_roles, get_current_active_user
 from app.models.user import UserInDB, UserRole
 from app.models.interview import (
     StudentAssignmentResponse,
     AssignmentStatus,
 )
-from app.models.interview_session import SessionStatus
-from app.services.interview_session_service import _ensure_utc
+from app.models.interview_session import SessionStatus, StudentPerformanceReportResponse
+from app.services.interview_session_service import _ensure_utc, InterviewSessionService
 from app.services.interview_service import InterviewService
 
 router = APIRouter()
@@ -75,6 +75,32 @@ async def get_my_assignment_detail(
         db=db,
         assignment_id=assignment_id,
         student_reg_no=student_reg,
+    )
+
+
+@router.get("/reports/{assignment_id}", response_model=StudentPerformanceReportResponse)
+async def get_performance_report(
+    assignment_id: str,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Retrieves a comprehensive performance report for a completed interview assignment:
+    - Evaluates topic-wise scores and identifies single-question evidence limits.
+    - Formulates actionable improvement priorities with clear justification.
+    - Matches personalized learning preparation video recommendations.
+    - Enforces cross-student isolation barrier (students access only their own report).
+    - Permits authorized faculty and administrators institutional access.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewSessionService.get_performance_report(
+        db=db,
+        assignment_id=assignment_id,
+        user=current_user,
     )
 
 

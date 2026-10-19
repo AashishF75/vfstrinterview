@@ -12,6 +12,7 @@ from app.models.interview_session import (
     SubmitAnswerRequest,
     SubmitAnswerResponse,
     ScorecardResponse,
+    StudentPerformanceReportResponse,
 )
 from app.models.voice import (
     VoiceSpeakRequest,
@@ -207,6 +208,29 @@ async def get_session_scorecard(
             detail="Interview database connection is unavailable",
         )
     return await InterviewSessionService.get_scorecard(
+        db=db,
+        session_id=session_id,
+        user=current_user,
+    )
+
+
+@router.get("/sessions/{session_id}/report", response_model=StudentPerformanceReportResponse)
+async def get_session_performance_report(
+    session_id: str,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Retrieves the comprehensive student performance report for a session.
+    Students access only their own report.
+    Administrators and faculty can access for academic review.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewSessionService.get_performance_report_by_session(
         db=db,
         session_id=session_id,
         user=current_user,

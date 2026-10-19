@@ -1575,13 +1575,22 @@ export default function InterviewRoom() {
                 <p className="text-[11px] text-slate-400">Adaptive Placement Mock Interview Performance Audit</p>
               </div>
             </div>
-            <Link
-              to="/dashboard"
-              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center space-x-1.5 border border-slate-700 transition shadow"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Back to Dashboard</span>
-            </Link>
+            <div className="flex items-center space-x-2.5">
+              <Link
+                to={`/report/${assignmentId || sessionId}`}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold flex items-center space-x-1.5 shadow-lg shadow-indigo-600/30 transition hover:-translate-y-0.5 active:translate-y-0"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Full Performance Report</span>
+              </Link>
+              <Link
+                to="/dashboard"
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center space-x-1.5 border border-slate-700 transition shadow"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to Dashboard</span>
+              </Link>
+            </div>
           </div>
         </header>
 

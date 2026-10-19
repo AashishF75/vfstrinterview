@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+@theme {
+  --color-slate-750: #253347;
+  --color-slate-850: #131d2e;
+}
+
 @layer base {
   :root {
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;

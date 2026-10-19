@@ -283,13 +283,18 @@ export default function Dashboard() {
       <header className="border-b border-slate-800/80 bg-[#0a101f]/90 backdrop-blur-xl sticky top-0 z-30 shadow-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <Link to="/" className="flex items-center space-x-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-xl p-1">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 via-indigo-600 to-violet-600 flex items-center justify-center shadow-lg shadow-cyan-600/20 ring-1 ring-cyan-400/30">
+            <Link
+              to="/"
+              className="group flex items-center space-x-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-xl p-1 transition-all duration-200"
+            >
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 via-indigo-600 to-violet-600 flex items-center justify-center shadow-lg shadow-cyan-600/20 ring-1 ring-cyan-400/30 group-hover:shadow-[0_0_18px_rgba(6,182,212,0.4)] group-hover:ring-cyan-400/60 group-hover:scale-105 transition-all duration-200">
                 <Sparkles className="w-5 h-5 text-white" />
               </div>
               <div className="flex flex-col sm:flex-row sm:items-center sm:space-x-2">
-                <span className="font-bold text-white text-sm tracking-tight">Adaptive Interview Intelligence</span>
-                <span className="hidden sm:inline-block text-[10px] uppercase font-bold px-2 py-0.5 rounded-md bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 tracking-wider">
+                <span className="font-bold text-white group-hover:text-cyan-200 text-sm tracking-tight transition-colors duration-200">
+                  Adaptive Interview Intelligence
+                </span>
+                <span className="hidden sm:inline-block text-[10px] uppercase font-bold px-2 py-0.5 rounded-md bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 group-hover:border-cyan-600/70 tracking-wider transition-colors duration-200">
                   VFSTR
                 </span>
               </div>
@@ -298,15 +303,15 @@ export default function Dashboard() {
 
           <div className="flex items-center space-x-2.5 sm:space-x-3">
             {/* Institution Badge */}
-            <div className="hidden md:flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900/80 border border-slate-800 text-xs text-slate-300">
-              <GraduationCap className="w-3.5 h-3.5 text-cyan-400" />
+            <div className="hidden md:flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-xs text-slate-300 hover:text-white transition-all duration-200 cursor-default shadow-sm group">
+              <GraduationCap className="w-3.5 h-3.5 text-cyan-400 group-hover:text-cyan-300 transition-colors duration-200" />
               <span className="truncate max-w-[180px] font-medium">{institutionLabel}</span>
             </div>
 
             {hasRole(['platform_admin', 'university_admin', 'department_admin']) && (
               <Link
                 to="/admin"
-                className="text-xs px-3.5 py-1.5 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 hover:text-white border border-indigo-500/30 font-medium transition-all duration-200 hover:-translate-y-0.5 flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-indigo-400"
+                className="text-xs px-3.5 py-1.5 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 hover:text-white border border-indigo-500/30 hover:border-indigo-400/60 font-medium transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
                 <Shield className="w-3.5 h-3.5" />
                 <span>Admin Console</span>
@@ -316,10 +321,10 @@ export default function Dashboard() {
             <button
               id="logout-button"
               onClick={handleLogout}
-              className="text-xs px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 hover:border-slate-600 transition-all duration-200 hover:-translate-y-0.5 flex items-center space-x-1.5 focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="text-xs px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 hover:border-slate-600 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 active:bg-slate-850 active:scale-[0.98] flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 group"
               title="Sign out of interview workspace"
             >
-              <LogOut className="w-3.5 h-3.5 text-slate-400" />
+              <LogOut className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-300 transition-colors" />
               <span>Sign Out</span>
             </button>
           </div>
@@ -603,7 +608,7 @@ export default function Dashboard() {
                 <button
                   onClick={fetchStudentAssignments}
                   disabled={assignmentsLoading}
-                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 hover:border-slate-600 text-slate-400 hover:text-cyan-300 border border-transparent transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
                   title="Refresh my assignments"
                 >
                   <RefreshCw className={`w-4 h-4 ${assignmentsLoading ? 'animate-spin text-cyan-400' : ''}`} />
@@ -636,21 +641,27 @@ export default function Dashboard() {
                 {assignments.map((assign) => (
                   <div
                     key={assign.assignment_id}
-                    className="p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-[#0a1120]/90 to-[#070c17]/90 border border-slate-800/80 hover:border-slate-700 hover:bg-[#0c152b] hover:-translate-y-0.5 hover:shadow-[0_10px_25px_-5px_rgba(0,0,0,0.5)] transition-all duration-300 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    className="group relative p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-[#0a1120]/90 to-[#070c17]/90 border border-slate-800/80 hover:border-indigo-500/40 hover:bg-[#0e172e] hover:-translate-y-1 hover:shadow-[0_14px_30px_-6px_rgba(99,102,241,0.22),0_0_20px_-4px_rgba(6,182,212,0.15)] transition-all duration-300 ease-out flex flex-col md:flex-row md:items-center justify-between gap-4 overflow-hidden"
                   >
-                    <div className="space-y-2.5 max-w-2xl">
+                    {/* Iridescent subtle ambient glow on hover */}
+                    <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-indigo-500/8 via-transparent to-cyan-500/8 pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100" />
+                    <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full blur-xl pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100 bg-indigo-500/10" />
+
+                    <div className="space-y-2.5 max-w-2xl relative z-10">
                       <div className="flex flex-wrap items-center gap-2.5">
-                        <span className="font-bold text-white text-sm sm:text-base tracking-tight">{assign.interview_title}</span>
+                        <span className="font-bold text-white text-sm sm:text-base tracking-tight group-hover:text-cyan-100 transition-colors duration-200">
+                          {assign.interview_title}
+                        </span>
                         <span
-                          className={`text-[10px] uppercase font-bold px-2.5 py-0.5 rounded-full border shadow-sm ${
+                          className={`text-[10px] uppercase font-bold px-2.5 py-0.5 rounded-full border shadow-sm transition-all duration-200 ease-out select-none ${
                             assign.status === 'assigned'
-                              ? 'bg-amber-950/60 text-amber-300 border-amber-800/60 shadow-[0_0_10px_rgba(245,158,11,0.15)]'
+                              ? 'bg-amber-950/60 text-amber-300 border-amber-800/60 shadow-[0_0_10px_rgba(245,158,11,0.15)] hover:bg-amber-900/60 hover:border-amber-500/70 hover:shadow-[0_0_14px_rgba(245,158,11,0.3)]'
                               : assign.status === 'accepted'
-                              ? 'bg-teal-950/60 text-teal-300 border-teal-800/60 shadow-[0_0_10px_rgba(20,184,166,0.15)]'
+                              ? 'bg-teal-950/60 text-teal-300 border-teal-800/60 shadow-[0_0_10px_rgba(20,184,166,0.15)] hover:bg-teal-900/60 hover:border-teal-500/70 hover:shadow-[0_0_14px_rgba(20,184,166,0.3)]'
                               : assign.status === 'in_progress'
-                              ? 'bg-indigo-950/60 text-indigo-300 border-indigo-800/60 shadow-[0_0_10px_rgba(99,102,241,0.15)]'
+                              ? 'bg-indigo-950/60 text-indigo-300 border-indigo-800/60 shadow-[0_0_10px_rgba(99,102,241,0.15)] hover:bg-indigo-900/60 hover:border-indigo-500/70 hover:text-indigo-200 hover:shadow-[0_0_14px_rgba(99,102,241,0.3)]'
                               : assign.status === 'completed'
-                              ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
+                              ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60 shadow-[0_0_10px_rgba(16,185,129,0.15)] hover:bg-emerald-900/60 hover:border-emerald-500/70 hover:text-emerald-300 hover:shadow-[0_0_14px_rgba(16,185,129,0.3)]'
                               : 'bg-rose-950/60 text-rose-400 border-rose-800/60'
                           }`}
                         >
@@ -659,11 +670,11 @@ export default function Dashboard() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-3.5 text-xs text-slate-400">
-                        <span className="flex items-center space-x-1.5">
+                        <span className="flex items-center space-x-1.5 group-hover:text-slate-300 transition-colors">
                           <Calendar className="w-3.5 h-3.5 text-indigo-400" />
                           <span>{new Date(assign.scheduled_start_time).toLocaleString()}</span>
                         </span>
-                        <span className="flex items-center space-x-1.5">
+                        <span className="flex items-center space-x-1.5 group-hover:text-slate-300 transition-colors">
                           <Clock className="w-3.5 h-3.5 text-violet-400" />
                           <span>Duration: {assign.duration_minutes} mins</span>
                         </span>
@@ -673,19 +684,19 @@ export default function Dashboard() {
                       </div>
 
                       {assign.interview_instructions && (
-                        <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/60 text-xs text-slate-300 font-mono mt-1 whitespace-pre-line line-clamp-2">
+                        <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/60 text-xs text-slate-300 font-mono mt-1 whitespace-pre-line line-clamp-2 group-hover:border-slate-700/80 transition-colors">
                           {assign.interview_instructions}
                         </div>
                       )}
                     </div>
 
                     {/* Student Action Buttons */}
-                    <div className="flex items-center space-x-2 self-end md:self-center shrink-0">
+                    <div className="flex items-center space-x-2 self-end md:self-center shrink-0 relative z-10">
                       {assign.status === 'assigned' && (
                         <button
                           onClick={() => handleAcceptAssignment(assign.assignment_id)}
                           disabled={actionLoadingId === assign.assignment_id}
-                          className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 hover:shadow-indigo-600/50 hover:-translate-y-0.5 transition-all duration-200 flex items-center space-x-1.5 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                          className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 hover:brightness-110 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] transition-all duration-200 ease-out flex items-center space-x-1.5 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a1120]"
                         >
                           {actionLoadingId === assign.assignment_id ? (
                             <Loader2 className="w-4 h-4 animate-spin text-white" />
@@ -699,7 +710,7 @@ export default function Dashboard() {
                       {assign.status === 'accepted' && (
                         <button
                           onClick={() => navigate(`/interview/${assign.assignment_id}`)}
-                          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/30 hover:shadow-emerald-600/50 hover:-translate-y-0.5 transition-all duration-200 flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 hover:brightness-110 text-white text-xs font-semibold shadow-lg shadow-emerald-600/30 hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] transition-all duration-200 ease-out flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a1120]"
                         >
                           <Play className="w-4 h-4 fill-white" />
                           <span>Enter Interview Room</span>
@@ -709,7 +720,7 @@ export default function Dashboard() {
                       {assign.status === 'in_progress' && (
                         <button
                           onClick={() => navigate(`/interview/${assign.assignment_id}`)}
-                          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 hover:shadow-indigo-600/50 hover:-translate-y-0.5 transition-all duration-200 flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 hover:brightness-110 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 hover:shadow-[0_0_22px_rgba(139,92,246,0.45)] hover:-translate-y-0.5 active:translate-y-0 active:brightness-90 active:scale-[0.98] transition-all duration-200 ease-out flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a1120]"
                         >
                           <Play className="w-4 h-4 fill-white" />
                           <span>Resume Interview</span>
@@ -717,13 +728,23 @@ export default function Dashboard() {
                       )}
 
                       {assign.status === 'completed' && (
-                        <button
-                          onClick={() => navigate(`/interview/${assign.assignment_id}`)}
-                          className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white border border-indigo-500/30 hover:border-indigo-400/60 hover:-translate-y-0.5 text-xs font-semibold transition-all duration-200 flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                        >
-                          <Award className="w-4 h-4 text-amber-400" />
-                          <span>View Scorecard</span>
-                        </button>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => navigate(`/report/${assign.assignment_id}`)}
+                            className="px-4 py-2.5 rounded-xl bg-indigo-600/90 hover:bg-indigo-500 text-white border border-indigo-400/50 hover:shadow-[0_0_18px_rgba(99,102,241,0.35)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] text-xs font-semibold transition-all duration-200 ease-out flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a1120]"
+                          >
+                            <FileText className="w-4 h-4 text-cyan-300" />
+                            <span>Performance Report</span>
+                          </button>
+                          <button
+                            onClick={() => navigate(`/interview/${assign.assignment_id}`)}
+                            className="px-3.5 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-750 text-indigo-300 hover:text-white border border-indigo-500/40 hover:border-indigo-400/80 hover:shadow-[0_0_18px_rgba(139,92,246,0.25)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] text-xs font-semibold transition-all duration-200 ease-out flex items-center space-x-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a1120]"
+                            title="Review interview room scorecard"
+                          >
+                            <Award className="w-4 h-4 text-amber-400" />
+                            <span>Scorecard</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -736,44 +757,49 @@ export default function Dashboard() {
         {/* User Profile Specifications & Dev Probes */}
         <div className={`grid grid-cols-1 ${import.meta.env.DEV ? 'lg:grid-cols-3' : 'max-w-2xl'} gap-6 mb-8`}>
           {/* User Metadata Card */}
-          <div className="p-6 sm:p-7 rounded-3xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 flex flex-col justify-between shadow-2xl relative overflow-hidden">
-            <div className="absolute -top-16 -right-16 w-40 h-40 bg-cyan-500/5 rounded-full blur-2xl pointer-events-none" />
-            <div>
+          <div className="group p-6 sm:p-7 rounded-3xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 hover:border-cyan-500/40 hover:bg-[#0c152a] hover:shadow-[0_12px_28px_-6px_rgba(6,182,212,0.18)] transition-all duration-300 ease-out flex flex-col justify-between shadow-2xl relative overflow-hidden">
+            {/* Soft restrained cyan glow */}
+            <div className="absolute -top-16 -right-16 w-40 h-40 bg-cyan-500/5 group-hover:bg-cyan-500/12 rounded-full blur-2xl pointer-events-none transition-colors duration-300" />
+            <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-cyan-500/5 via-transparent to-indigo-500/5 pointer-events-none transition-opacity duration-300 opacity-0 group-hover:opacity-100" />
+
+            <div className="relative z-10">
               <h3 className="text-sm font-bold text-white mb-4 flex items-center space-x-2">
-                <User className="w-4 h-4 text-cyan-400" />
-                <span>Student Identity & Verification</span>
+                <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 group-hover:border-cyan-500/40 group-hover:scale-105 transition-all duration-200">
+                  <User className="w-4 h-4 text-cyan-400" />
+                </div>
+                <span className="group-hover:text-cyan-100 transition-colors duration-200">Student Identity & Verification</span>
               </h3>
 
-              <div className="space-y-3 text-xs">
-                <div>
+              <div className="space-y-1.5 text-xs">
+                <div className="p-2 -mx-2 rounded-xl hover:bg-slate-800/40 transition-colors duration-150">
                   <span className="text-slate-400 block mb-0.5">Assigned Email</span>
                   <span className="font-mono text-slate-200">{user?.email}</span>
                 </div>
                 {user?.registration_number && (
-                  <div>
+                  <div className="p-2 -mx-2 rounded-xl hover:bg-slate-800/40 transition-colors duration-150">
                     <span className="text-slate-400 block mb-0.5">Registration Number</span>
                     <span className="font-mono text-cyan-300 font-bold">{user?.registration_number}</span>
                   </div>
                 )}
-                <div>
+                <div className="p-2 -mx-2 rounded-xl hover:bg-slate-800/40 transition-colors duration-150">
                   <span className="text-slate-400 block mb-0.5">Role Permission Level</span>
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 uppercase">
                     {user?.role}
                   </span>
                 </div>
-                <div>
+                <div className="p-2 -mx-2 rounded-xl hover:bg-slate-800/40 transition-colors duration-150">
                   <span className="text-slate-400 block mb-0.5">Institution</span>
                   <span className="text-slate-200 font-medium">
                     {institutionLabel}
                   </span>
                 </div>
                 {user?.department && (
-                  <div>
+                  <div className="p-2 -mx-2 rounded-xl hover:bg-slate-800/40 transition-colors duration-150">
                     <span className="text-slate-400 block mb-0.5">Department / Stream</span>
                     <span className="font-mono text-slate-200">{user?.department}</span>
                   </div>
                 )}
-                <div>
+                <div className="p-2 -mx-2 rounded-xl hover:bg-slate-800/40 transition-colors duration-150">
                   <span className="text-slate-400 block mb-0.5">Account Status</span>
                   <span className="text-emerald-400 font-semibold capitalize flex items-center space-x-1">
                     <CheckCircle2 className="w-3.5 h-3.5 inline" />
@@ -783,7 +809,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="mt-6 pt-4 border-t border-slate-800/80 text-[11px] text-slate-400 flex items-center justify-between">
+            <div className="mt-6 pt-4 border-t border-slate-800/80 text-[11px] text-slate-400 flex items-center justify-between relative z-10">
               <span>Bearer Session Validated</span>
               <span className="text-cyan-400 font-mono text-[10px]">ECDSA / HS256</span>
             </div>
@@ -805,7 +831,7 @@ export default function Dashboard() {
                   id="test-protected-btn"
                   onClick={handleTestProtected}
                   disabled={testLoading}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center space-x-2 focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 hover:shadow-lg hover:shadow-indigo-600/30 text-white transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] flex items-center space-x-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                 >
                   <Activity className="w-3.5 h-3.5" />
                   <span>Probe /api/auth/protected-test (Any Role)</span>
@@ -815,7 +841,7 @@ export default function Dashboard() {
                   id="test-admin-only-btn"
                   onClick={handleTestAdminOnly}
                   disabled={testLoading}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition flex items-center space-x-2 focus-visible:ring-2 focus-visible:ring-cyan-400"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 hover:border-slate-600 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] flex items-center space-x-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
                 >
                   <Lock className="w-3.5 h-3.5 text-amber-400" />
                   <span>Probe /api/auth/admin-only (Admin Restricted)</span>

@@ -31,6 +31,7 @@ import VfstrStudentLogin from './pages/VfstrStudentLogin';
 import Dashboard from './pages/Dashboard';
 import AdminConsole from './pages/AdminConsole';
 import InterviewRoom from './pages/InterviewRoom';
+import StudentReport from './pages/StudentReport';
 import Unauthorized from './pages/Unauthorized';
 
 function HomePage() {
@@ -540,6 +541,14 @@ export default function App() {
         element={
           <ProtectedRoute allowedRoles={['student', 'platform_admin', 'university_admin', 'department_admin']}>
             <InterviewRoom />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/report/:assignmentId"
+        element={
+          <ProtectedRoute allowedRoles={['student', 'platform_admin', 'university_admin', 'department_admin', 'faculty']}>
+            <StudentReport />
           </ProtectedRoute>
         }
       />
