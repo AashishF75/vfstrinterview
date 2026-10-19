@@ -6,6 +6,7 @@ import {
   startInterviewSession,
   getCurrentQuestion,
   submitInterviewAnswer,
+  skipInterviewQuestion,
   runInterviewCode,
   submitInterviewCode,
   getSessionScorecard,
@@ -90,6 +91,9 @@ export default function InterviewRoom() {
   const [activeQuestion, setActiveQuestion] = useState(null);
   const [answerText, setAnswerText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [isSkipping, setIsSkipping] = useState(false);
+  const [showSkipModal, setShowSkipModal] = useState(false);
+  const submissionSeqRef = useRef(0);
 
   // Navigation & Workspace Tabs ('room' | 'navigator' | 'code' | 'notes' | 'guide' | 'chat' | 'feedback' | 'settings')
   const [activeTab, setActiveTab] = useState('room');
@@ -1061,9 +1065,99 @@ export default function InterviewRoom() {
     }
   };
 
+  const advanceToNextQuestionData = useCallback((nextData) => {
+    if (!nextData) return;
+
+    const nextText =
+      nextData.question_text ||
+      nextData.question ||
+      nextData.active_question?.question_text ||
+      nextData.active_question?.question ||
+      '';
+
+    const nextTopic =
+      nextData.topic ||
+      nextData.active_question?.topic ||
+      activeQuestion?.topic ||
+      'Core Fundamentals';
+
+    const nextDiff =
+      nextData.difficulty ||
+      nextData.current_difficulty ||
+      nextData.active_question?.difficulty ||
+      'medium';
+
+    const nextType =
+      nextData.question_type ||
+      nextData.active_question?.question_type ||
+      'conceptual';
+
+    const nextIndex =
+      nextData.question_index ??
+      nextData.current_question_index ??
+      nextData.active_question?.question_index ??
+      (activeQuestion?.question_index ? activeQuestion.question_index + 1 : 2);
+
+    const nextTotal =
+      nextData.total_questions ??
+      nextData.total_questions_target ??
+      nextData.active_question?.total_questions ??
+      activeQuestion?.total_questions ??
+      5;
+
+    const nextCodingSpec =
+      nextData.coding_spec ||
+      nextData.active_question?.coding_spec ||
+      null;
+
+    const nextTitle =
+      nextData.interview_title ||
+      nextData.active_question?.interview_title ||
+      activeQuestion?.interview_title ||
+      'Adaptive Technical Interview';
+
+    if (nextData.time_remaining_seconds != null && nextData.time_remaining_seconds >= 0) {
+      setSecondsRemaining(nextData.time_remaining_seconds);
+    }
+
+    setActiveQuestion({
+      session_id: sessionId,
+      question_index: nextIndex,
+      total_questions: nextTotal,
+      question_text: nextText,
+      topic: nextTopic,
+      difficulty: nextDiff,
+      question_type: nextType,
+      coding_spec: nextCodingSpec,
+      interview_title: nextTitle,
+      evaluator_mode: nextData.evaluator_mode || activeQuestion?.evaluator_mode,
+    });
+
+    if (nextType === 'coding') {
+      setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python'] || '');
+      setActiveTab('code');
+    } else {
+      setAnswerText('');
+      setActiveTab('room');
+    }
+
+    setExecutionResult(null);
+    setUseCustomInput(false);
+    setCustomInputText('');
+    setLastEvaluation(null);
+    setPendingNextQuestion(null);
+    setProgressionError(null);
+    setInterimTranscript('');
+    setSpeechError(null);
+
+    if (nextText && !isMuted) {
+      speakQuestion(nextText);
+    }
+  }, [activeQuestion, isMuted, selectedLanguage, sessionId, speakQuestion]);
+
   const handleSubmitAnswer = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!answerText.trim() || submitting || isTranscribingAudio || !sessionId) return;
+    if (!answerText.trim() || submitting || isSkipping || isTranscribingAudio || !sessionId) return;
 
     handleStopSpeech();
     stopVoiceRecognition();
@@ -1074,6 +1168,9 @@ export default function InterviewRoom() {
     setSubmitting(true);
     setError(null);
     setProgressionError(null);
+
+    submissionSeqRef.current += 1;
+    const currentSeq = submissionSeqRef.current;
 
     const isCoding = activeQuestion?.question_type === 'coding';
     const lang = selectedLanguage.toLowerCase() === 'c++' ? 'cpp' : selectedLanguage.toLowerCase();
@@ -1088,38 +1185,24 @@ export default function InterviewRoom() {
       res = await submitInterviewAnswer(sessionId, answerText.trim());
     }
 
+    if (currentSeq !== submissionSeqRef.current) return;
     setSubmitting(false);
 
     if (!res.success) {
       // Duplicate submission conflict guard (409): check if backend already advanced to next question
-      if (res.status === 409 || (res.error && res.error.toLowerCase().includes('already been submitted'))) {
+      if (res.status === 409 || (res.error && res.error.toLowerCase().includes('already been'))) {
         try {
           const curRes = await getCurrentQuestion(sessionId);
           if (curRes.success && curRes.data) {
             const isComp = curRes.data.is_session_completed || curRes.data.session_status === 'completed';
             const nextIdx = curRes.data.question_index ?? curRes.data.current_question_index;
             if (isComp) {
-              setLastEvaluation({
-                score: 8.0,
-                feedback: 'All questions have been completed and recorded on the server. Ready to view your final scorecard.',
-                strengths: ['Interview completed on server'],
-                improvements: [],
-                difficultyRationale: 'Session synchronized with server completion.',
-                codeExecutionSummary: null,
-                isFinal: true,
-              });
+              setIsCompleted(true);
+              const scRes = await getSessionScorecard(sessionId);
+              if (scRes.success && scRes.data) setScorecard(scRes.data);
               return;
-            } else if (nextIdx > (activeQuestion?.question_index || 1) || curRes.data.question_text !== activeQuestion?.question_text) {
-              setPendingNextQuestion(curRes.data);
-              setLastEvaluation({
-                score: 8.0,
-                feedback: 'Your answer for this question was previously submitted and recorded on the server. Ready to proceed to the next question.',
-                strengths: ['Answer recorded on server'],
-                improvements: [],
-                difficultyRationale: 'Session synchronized with server progression.',
-                codeExecutionSummary: null,
-                isFinal: false,
-              });
+            } else if (nextIdx > (activeQuestion?.question_index || 1)) {
+              advanceToNextQuestionData(curRes.data);
               return;
             }
           }
@@ -1132,36 +1215,84 @@ export default function InterviewRoom() {
 
     const data = res.data;
 
-    // Show real evaluation feedback and score
-    setLastEvaluation({
-      score: data.evaluated_score ?? data.evaluation?.score ?? 0,
-      feedback: data.feedback ?? data.evaluation?.feedback ?? '',
-      strengths: data.strengths ?? data.evaluation?.strengths ?? [],
-      improvements: data.improvements ?? data.evaluation?.improvements ?? [],
-      difficultyRationale: data.difficulty_rationale ?? data.difficulty_adjustment_rationale ?? '',
-      codeExecutionSummary: data.code_execution_summary ?? null,
-      isFinal: !!data.is_session_completed,
-    });
-
     if (data.is_session_completed) {
-      // Pre-fetch scorecard in background without prematurely hiding evaluation feedback
-      getSessionScorecard(sessionId)
-        .then((scRes) => {
+      setIsCompleted(true);
+      try {
+        const scRes = await getSessionScorecard(sessionId);
+        if (scRes.success && scRes.data) {
+          setScorecard(scRes.data);
+        }
+      } catch {}
+    } else if (data.next_question) {
+      advanceToNextQuestionData(data.next_question);
+    }
+  };
+
+  const handleConfirmSkip = async () => {
+    if (isSkipping || submitting || !sessionId) return;
+
+    handleStopSpeech();
+    stopVoiceRecognition();
+    if (isRecordingAudio) {
+      cancelDeepgramRecording();
+    }
+    setIsTranscribingAudio(false);
+    setSpeechError(null);
+    setInterimTranscript('');
+    setProgressionError(null);
+    setIsSkipping(true);
+
+    submissionSeqRef.current += 1;
+    const currentSeq = submissionSeqRef.current;
+
+    try {
+      const res = await skipInterviewQuestion(sessionId);
+      if (currentSeq !== submissionSeqRef.current) return;
+
+      setIsSkipping(false);
+      setShowSkipModal(false);
+
+      if (!res.success) {
+        if (res.status === 409 || (res.error && res.error.toLowerCase().includes('already been'))) {
+          try {
+            const curRes = await getCurrentQuestion(sessionId);
+            if (curRes.success && curRes.data) {
+              const isComp = curRes.data.is_session_completed || curRes.data.session_status === 'completed';
+              const nextIdx = curRes.data.question_index ?? curRes.data.current_question_index;
+              if (isComp) {
+                setIsCompleted(true);
+                const scRes = await getSessionScorecard(sessionId);
+                if (scRes.success && scRes.data) setScorecard(scRes.data);
+                return;
+              } else if (nextIdx > (activeQuestion?.question_index || 1)) {
+                advanceToNextQuestionData(curRes.data);
+                return;
+              }
+            }
+          } catch {}
+        }
+        setError(res.error || 'Failed to skip question. Please retry.');
+        return;
+      }
+
+      const data = res.data;
+      if (data.is_session_completed) {
+        setIsCompleted(true);
+        try {
+          const scRes = await getSessionScorecard(sessionId);
           if (scRes.success && scRes.data) {
             setScorecard(scRes.data);
           }
-        })
-        .catch(() => {});
-    } else if (data.next_question) {
-      setPendingNextQuestion(data.next_question);
-    }
-
-    // Smoothly scroll chat view to evaluation card
-    setTimeout(() => {
-      if (evaluationCardRef.current) {
-        evaluationCardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch {}
+      } else if (data.next_question) {
+        advanceToNextQuestionData(data.next_question);
       }
-    }, 120);
+    } catch (err) {
+      if (currentSeq === submissionSeqRef.current) {
+        setIsSkipping(false);
+        setError(err.message || 'Error occurred while skipping question.');
+      }
+    }
   };
 
   const handleProceedToNextQuestion = async () => {
@@ -1179,16 +1310,13 @@ export default function InterviewRoom() {
     setIsProgressing(true);
 
     try {
-      // 1. Authoritative resolution: fetch live from backend current-question endpoint, with pendingNextQuestion as fallback
       let nextData = null;
       try {
         const curRes = await getCurrentQuestion(sessionId);
         if (curRes && curRes.success && curRes.data) {
           nextData = curRes.data;
         }
-      } catch {
-        // Fallback to locally cached pendingNextQuestion if network fetch encountered an issue
-      }
+      } catch {}
 
       if (!nextData || (!nextData.question_text && !nextData.question && !nextData.active_question?.question_text)) {
         nextData = pendingNextQuestion;
@@ -1198,102 +1326,14 @@ export default function InterviewRoom() {
         throw new Error('Failed to retrieve next question from server. Please retry.');
       }
 
-      // Check if session reached final completion
       if (nextData.is_session_completed || nextData.session_status === 'completed') {
         await handleViewScorecard();
         setIsProgressing(false);
         return;
       }
 
-      const nextText =
-        nextData.question_text ||
-        nextData.question ||
-        nextData.active_question?.question_text ||
-        nextData.active_question?.question ||
-        '';
-
-      if (!nextText) {
-        throw new Error('Retrieved next question text is empty. Please retry.');
-      }
-
-      const nextTopic =
-        nextData.topic ||
-        nextData.active_question?.topic ||
-        activeQuestion?.topic ||
-        'Core Fundamentals';
-
-      const nextDiff =
-        nextData.difficulty ||
-        nextData.current_difficulty ||
-        nextData.active_question?.difficulty ||
-        'medium';
-
-      const nextType =
-        nextData.question_type ||
-        nextData.active_question?.question_type ||
-        'conceptual';
-
-      const nextIndex =
-        nextData.question_index ??
-        nextData.current_question_index ??
-        nextData.active_question?.question_index ??
-        (activeQuestion?.question_index ? activeQuestion.question_index + 1 : 2);
-
-      const nextTotal =
-        nextData.total_questions ??
-        nextData.total_questions_target ??
-        nextData.active_question?.total_questions ??
-        activeQuestion?.total_questions ??
-        5;
-
-      const nextCodingSpec =
-        nextData.coding_spec ||
-        nextData.active_question?.coding_spec ||
-        null;
-
-      const nextTitle =
-        nextData.interview_title ||
-        nextData.active_question?.interview_title ||
-        activeQuestion?.interview_title ||
-        'Adaptive Technical Interview';
-
-      // 2. Update remaining time if provided by backend
-      if (nextData.time_remaining_seconds != null && nextData.time_remaining_seconds >= 0) {
-        setSecondsRemaining(nextData.time_remaining_seconds);
-      }
-
-      // 3. Update active question state using authoritative server data
-      setActiveQuestion({
-        session_id: sessionId,
-        question_index: nextIndex,
-        total_questions: nextTotal,
-        question_text: nextText,
-        topic: nextTopic,
-        difficulty: nextDiff,
-        question_type: nextType,
-        coding_spec: nextCodingSpec,
-        interview_title: nextTitle,
-        evaluator_mode: nextData.evaluator_mode || activeQuestion?.evaluator_mode,
-      });
-
-      // 4. Clear answer draft ONLY after next question is loaded successfully
-      if (nextType === 'coding') {
-        setAnswerText(CODE_TEMPLATES[selectedLanguage] || CODE_TEMPLATES['Python'] || '');
-        setActiveTab('code');
-      } else {
-        setAnswerText('');
-        setActiveTab('room');
-      }
-
-      // 5. Reset execution result and evaluation state
-      setExecutionResult(null);
-      setUseCustomInput(false);
-      setCustomInputText('');
-      setLastEvaluation(null);
-      setPendingNextQuestion(null);
-      setProgressionError(null);
+      advanceToNextQuestionData(nextData);
     } catch (err) {
-      // Useful error if progression fails, preserving evaluated answer and lastEvaluation for safe retry
       setProgressionError(err.message || 'Unable to advance to the next question. Please click Retry.');
     } finally {
       setIsProgressing(false);
@@ -2507,25 +2547,41 @@ export default function InterviewRoom() {
                           {wordCount} words {wordCount >= 25 ? '✓ (Adequate depth)' : '(25+ words recommended)'}
                         </span>
 
-                        <button
-                          type="button"
-                          onClick={handleSubmitAnswer}
-                          disabled={submitting || !answerText.trim() || isTranscribingAudio}
-                          id="submit-conversational-answer-btn"
-                          className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
-                        >
-                          {submitting ? (
-                            <>
-                              <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                              <span>Evaluating...</span>
-                            </>
-                          ) : (
-                            <>
-                              <span>Submit Answer</span>
-                              <Send className="w-3.5 h-3.5" />
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowSkipModal(true)}
+                            disabled={submitting || isSkipping || isTranscribingAudio}
+                            id="skip-conversational-question-btn"
+                            data-testid="skip-question-btn"
+                            className="px-4 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700/80 text-xs font-semibold flex items-center space-x-1.5 transition disabled:opacity-50 cursor-pointer"
+                            title="Skip this question without scoring"
+                          >
+                            <ChevronRight className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Skip Question</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleSubmitAnswer}
+                            disabled={submitting || isSkipping || !answerText.trim() || isTranscribingAudio}
+                            id="submit-conversational-answer-btn"
+                            data-testid="submit-answer-btn"
+                            className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-violet-600/20 transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                          >
+                            {submitting ? (
+                              <>
+                                <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Evaluating...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>Submit Answer</span>
+                                <Send className="w-3.5 h-3.5" />
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -2683,25 +2739,40 @@ export default function InterviewRoom() {
                       </button>
                     )
                   ) : (
-                    <button
-                      type="button"
-                      onClick={handleSubmitAnswer}
-                      disabled={submitting || runningCode || !answerText.trim()}
-                      id="sandbox-submit-solution-btn"
-                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
-                    >
-                      {submitting ? (
-                        <>
-                          <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                          <span>Evaluating...</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>Submit Solution</span>
-                          <Send className="w-3.5 h-3.5" />
-                        </>
-                      )}
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowSkipModal(true)}
+                        disabled={submitting || isSkipping || runningCode}
+                        id="sandbox-skip-question-btn"
+                        data-testid="sandbox-skip-question-btn"
+                        className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold flex items-center space-x-1.5 transition disabled:opacity-50 cursor-pointer"
+                        title="Skip this question without scoring"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Skip Question</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleSubmitAnswer}
+                        disabled={submitting || isSkipping || runningCode || !answerText.trim()}
+                        id="sandbox-submit-solution-btn"
+                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold shadow-md transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                      >
+                        {submitting ? (
+                          <>
+                            <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Evaluating...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>Submit Solution</span>
+                            <Send className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -3042,6 +3113,69 @@ export default function InterviewRoom() {
                 className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold"
               >
                 Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* Skip Question Confirmation Modal                                     */}
+      {/* ==================================================================== */}
+      {showSkipModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-md rounded-2xl bg-[#09101D] border border-slate-800 p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3 border-b border-slate-800 pb-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  Skip Question {activeQuestion?.question_index || 1}?
+                </h3>
+                <p className="text-xs text-slate-400">Confirmation Required</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-slate-300 leading-relaxed space-y-2">
+              <p>
+                Are you sure you want to skip this question?
+              </p>
+              <ul className="list-disc list-inside text-slate-400 space-y-1 text-[11px]">
+                <li>No score will be awarded for skipped questions.</li>
+                <li>This question cannot be retried later.</li>
+                <li>The interview will immediately advance to the next question.</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSkipModal(false)}
+                disabled={isSkipping}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-semibold transition border border-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSkip}
+                disabled={isSkipping}
+                id="confirm-skip-question-btn"
+                data-testid="confirm-skip-btn"
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition flex items-center space-x-1.5 shadow-lg shadow-amber-600/20 disabled:opacity-50 cursor-pointer"
+              >
+                {isSkipping ? (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Skipping...</span>
+                  </>
+                ) : (
+                  <>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                    <span>Yes, Skip Question</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

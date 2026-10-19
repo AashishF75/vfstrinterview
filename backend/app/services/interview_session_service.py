@@ -597,6 +597,23 @@ class InterviewSessionService:
             )
 
         if session.get("session_status") != SessionStatus.IN_PROGRESS.value:
+            if session.get("session_status") == SessionStatus.COMPLETED.value:
+                existing_sc_call = db[SCORECARDS_COLLECTION].find_one({"session_id": session_id})
+                existing_scorecard = await existing_sc_call if hasattr(existing_sc_call, "__await__") else existing_sc_call
+                return SubmitAnswerResponse(
+                    session_id=session_id,
+                    question_index=session.get("current_question_index", 1),
+                    evaluated_score=existing_scorecard.get("overall_score", 0.0) if existing_scorecard else 0.0,
+                    feedback="Interview session is already completed.",
+                    strengths=[],
+                    improvements=[],
+                    next_difficulty=QuestionDifficulty(session.get("current_difficulty", "medium")),
+                    difficulty_rationale="Session already completed.",
+                    is_session_completed=True,
+                    is_skipped=False,
+                    next_question=None,
+                    scorecard_id=session.get("final_scorecard_id") or (existing_scorecard.get("scorecard_id") if existing_scorecard else None),
+                )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot submit answer: Session is already {session.get('session_status')}.",
@@ -632,7 +649,7 @@ class InterviewSessionService:
         code_to_eval = source_code or answer_text
         code_execution_summary = None
 
-        # Concurrency barrier: Check if this question was already submitted
+        # Concurrency barrier: Check if this question was already answered or skipped
         find_one_call = db[RESPONSES_COLLECTION].find_one(
             {"session_id": session_id, "question_index": curr_q_index}
         )
@@ -640,7 +657,7 @@ class InterviewSessionService:
         if isinstance(existing_resp, dict) and existing_resp:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Question {curr_q_index} has already been submitted for this session.",
+                detail=f"Question {curr_q_index} has already been submitted or skipped for this session.",
             )
 
         # 1. Evaluate answer
@@ -744,6 +761,8 @@ class InterviewSessionService:
             "improvements": eval_result.get("improvements", []),
             "difficulty_adjustment_rationale": diff_rationale,
             "evaluator_mode": evaluator_mode_str,
+            "status": "answered",
+            "is_skipped": False,
             "evaluated_at": now,
             "created_at": now,
         }
@@ -779,6 +798,8 @@ class InterviewSessionService:
                 "evaluation_feedback": eval_result["feedback"],
                 "strengths": eval_result.get("strengths", []),
                 "improvements": eval_result.get("improvements", []),
+                "status": "answered",
+                "is_skipped": False,
             }
             all_responses = prior_responses + [current_summary_item]
 
@@ -796,6 +817,9 @@ class InterviewSessionService:
 
             scorecard_id = str(uuid.uuid4())
             difficulty_progression = [r.get("difficulty", "medium") for r in all_responses if isinstance(r, dict)]
+
+            answered_cnt = len([r for r in all_responses if isinstance(r, dict) and not r.get("is_skipped") and r.get("status") != "skipped"])
+            skipped_cnt = len([r for r in all_responses if isinstance(r, dict) and (r.get("is_skipped") or r.get("status") == "skipped")])
 
             if provider.get_mode() == EvaluatorMode.MOCK_RULE_ENGINE:
                 disclaimer_text = (
@@ -821,6 +845,9 @@ class InterviewSessionService:
                     "on candidate responses, and do not claim objective or bias-free scoring."
                 )
 
+            if skipped_cnt > 0:
+                disclaimer_text += f" Score is calculated across {answered_cnt} evaluated question(s). {skipped_cnt} of {total_target} assigned questions were skipped."
+
             scorecard_doc = {
                 "scorecard_id": scorecard_id,
                 "session_id": session_id,
@@ -835,6 +862,10 @@ class InterviewSessionService:
                 "areas_for_growth": scorecard_summary.get("areas_for_growth", []),
                 "evaluator_mode": provider.get_mode().value,
                 "disclaimer": disclaimer_text,
+                "total_questions_assigned": total_target,
+                "questions_answered": answered_cnt,
+                "questions_skipped": skipped_cnt,
+                "questions_evaluated": answered_cnt,
                 "created_at": now,
             }
 
@@ -1039,10 +1070,387 @@ class InterviewSessionService:
             next_difficulty=next_diff,
             difficulty_rationale=diff_rationale,
             is_session_completed=False,
+            is_skipped=False,
             next_question=next_question_resp,
             scorecard_id=None,
             evaluator_mode=evaluator_mode_str,
             code_execution_summary=code_execution_summary,
+        )
+
+    @staticmethod
+    async def skip_question(
+        db: AsyncIOMotorDatabase,
+        session_id: str,
+        student_user: UserInDB,
+    ) -> SubmitAnswerResponse:
+        """
+        Skips the active question without assigning an answer score.
+        Advances session state to the next question or completes the interview if on the final question.
+        Ensures idempotent completion and strict ownership validation.
+        """
+        clean_reg = (student_user.registration_number or "").strip().upper()
+        session = await db[SESSIONS_COLLECTION].find_one({"session_id": session_id})
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Interview session '{session_id}' not found",
+            )
+
+        if session.get("student_registration_number") != clean_reg:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You cannot skip questions in another student's session",
+            )
+
+        if session.get("session_status") != SessionStatus.IN_PROGRESS.value:
+            if session.get("session_status") == SessionStatus.COMPLETED.value:
+                existing_sc_call = db[SCORECARDS_COLLECTION].find_one({"session_id": session_id})
+                existing_scorecard = await existing_sc_call if hasattr(existing_sc_call, "__await__") else existing_sc_call
+                return SubmitAnswerResponse(
+                    session_id=session_id,
+                    question_index=session.get("current_question_index", 1),
+                    evaluated_score=None,
+                    feedback="Interview session is already completed.",
+                    strengths=[],
+                    improvements=[],
+                    next_difficulty=QuestionDifficulty(session.get("current_difficulty", "medium")),
+                    difficulty_rationale="Session already completed.",
+                    is_session_completed=True,
+                    is_skipped=True,
+                    next_question=None,
+                    scorecard_id=session.get("final_scorecard_id") or (existing_scorecard.get("scorecard_id") if existing_scorecard else None),
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot skip question: Session is already {session.get('session_status')}.",
+            )
+
+        now = utc_now()
+        expires_at = _ensure_utc(session.get("expires_at", now))
+        if now > expires_at:
+            await db[SESSIONS_COLLECTION].update_one(
+                {"session_id": session_id},
+                {"$set": {"session_status": SessionStatus.TIMED_OUT.value, "updated_at": now}},
+            )
+            asgn_id = session.get("assignment_id")
+            if asgn_id:
+                try:
+                    await db[ASSIGNMENTS_COLLECTION].update_one(
+                        {"assignment_id": asgn_id},
+                        {"$set": {"status": AssignmentStatus.COMPLETED.value, "completed_at": now, "updated_at": now}},
+                    )
+                except KeyError:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot skip question: Interview session duration has expired.",
+            )
+
+        active_q = session.get("active_question", {})
+        curr_q_index = session.get("current_question_index", 1)
+        curr_diff = QuestionDifficulty(session.get("current_difficulty", "medium"))
+        topic = active_q.get("topic", "Networking")
+        question_text = active_q.get("question_text", "")
+        is_coding = active_q.get("question_type") == "coding"
+        total_target = session.get("total_questions_target", 5)
+
+        # Concurrency barrier: Check if this question was already answered or skipped
+        find_one_call = db[RESPONSES_COLLECTION].find_one(
+            {"session_id": session_id, "question_index": curr_q_index}
+        )
+        existing_resp = await find_one_call if hasattr(find_one_call, "__await__") else find_one_call
+        if isinstance(existing_resp, dict) and existing_resp:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Question {curr_q_index} has already been submitted or skipped for this session.",
+            )
+
+        provider = get_ai_provider()
+        evaluator_mode_str = provider.get_mode().value
+
+        response_id = str(uuid.uuid4())
+        response_doc = {
+            "response_id": response_id,
+            "session_id": session_id,
+            "question_index": curr_q_index,
+            "question_text": question_text,
+            "difficulty": curr_diff.value,
+            "topic": topic,
+            "answer_text": "(Question skipped by candidate)",
+            "question_type": "coding" if is_coding else "conceptual",
+            "language": None,
+            "source_code": None,
+            "code_execution_summary": None,
+            "evaluation_score": None,
+            "evaluation_feedback": "Question was skipped by candidate during the interview.",
+            "strengths": [],
+            "improvements": [],
+            "difficulty_adjustment_rationale": "Question skipped by candidate; maintaining current difficulty level.",
+            "evaluator_mode": evaluator_mode_str,
+            "status": "skipped",
+            "is_skipped": True,
+            "evaluated_at": now,
+            "created_at": now,
+        }
+
+        # Check if reached final question
+        if curr_q_index >= total_target:
+            cursor = db[RESPONSES_COLLECTION].find({"session_id": session_id})
+            if hasattr(cursor, "sort") and callable(cursor.sort):
+                cursor = cursor.sort("question_index", pymongo.ASCENDING)
+            if hasattr(cursor, "to_list"):
+                res = cursor.to_list(length=100)
+                prior_responses = await res if hasattr(res, "__await__") else res
+            elif hasattr(cursor, "__await__"):
+                prior_responses = await cursor
+            else:
+                prior_responses = cursor
+
+            if not isinstance(prior_responses, list):
+                prior_responses = []
+
+            all_responses = prior_responses + [response_doc]
+
+            try:
+                scorecard_summary = await provider.generate_scorecard_summary(
+                    responses=all_responses,
+                    interview_title=topic,
+                )
+            except (AIProviderUnavailableError, AIProviderError) as exc:
+                logger.error("AI provider failure during scorecard generation on skip: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Scorecard generation service is temporarily unavailable: {str(exc)}",
+                )
+
+            scorecard_id = str(uuid.uuid4())
+            difficulty_progression = [r.get("difficulty", "medium") for r in all_responses if isinstance(r, dict)]
+
+            answered_cnt = len([r for r in all_responses if isinstance(r, dict) and not r.get("is_skipped") and r.get("status") != "skipped"])
+            skipped_cnt = len([r for r in all_responses if isinstance(r, dict) and (r.get("is_skipped") or r.get("status") == "skipped")])
+
+            disclaimer_text = (
+                f"Evaluations reflect automated technical rubrics. "
+                f"Report based on {answered_cnt} evaluated question(s) and {skipped_cnt} skipped question(s) "
+                f"out of {total_target} assigned questions."
+            )
+
+            scorecard_doc = {
+                "scorecard_id": scorecard_id,
+                "session_id": session_id,
+                "interview_id": session.get("interview_id", ""),
+                "student_registration_number": clean_reg,
+                "overall_score": scorecard_summary["overall_score"],
+                "percentage_score": scorecard_summary["percentage_score"],
+                "performance_level": scorecard_summary["performance_level"],
+                "summary_feedback": scorecard_summary["summary_feedback"],
+                "difficulty_progression": difficulty_progression,
+                "strengths_summary": scorecard_summary.get("strengths", []),
+                "areas_for_growth": scorecard_summary.get("areas_for_growth", []),
+                "evaluator_mode": evaluator_mode_str,
+                "disclaimer": disclaimer_text,
+                "total_questions_assigned": total_target,
+                "questions_answered": answered_cnt,
+                "questions_skipped": skipped_cnt,
+                "questions_evaluated": answered_cnt,
+                "created_at": now,
+            }
+
+            try:
+                await db[RESPONSES_COLLECTION].insert_one(response_doc)
+            except pymongo.errors.DuplicateKeyError:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Question {curr_q_index} has already been answered or skipped for this session.",
+                )
+
+            await db[SCORECARDS_COLLECTION].insert_one(scorecard_doc)
+
+            await db[SESSIONS_COLLECTION].update_one(
+                {"session_id": session_id},
+                {
+                    "$set": {
+                        "session_status": SessionStatus.COMPLETED.value,
+                        "completed_at": now,
+                        "final_scorecard_id": scorecard_id,
+                        "updated_at": now,
+                    }
+                },
+            )
+
+            await db[ASSIGNMENTS_COLLECTION].update_one(
+                {"assignment_id": session["assignment_id"]},
+                {
+                    "$set": {
+                        "status": AssignmentStatus.COMPLETED.value,
+                        "completed_at": now,
+                        "updated_at": now,
+                    }
+                },
+            )
+
+            return SubmitAnswerResponse(
+                session_id=session_id,
+                question_index=curr_q_index,
+                evaluated_score=None,
+                feedback="Question skipped by candidate.",
+                strengths=[],
+                improvements=[],
+                next_difficulty=curr_diff,
+                difficulty_rationale="Question skipped by candidate; interview completed.",
+                is_session_completed=True,
+                is_skipped=True,
+                next_question=None,
+                scorecard_id=scorecard_id,
+                evaluator_mode=evaluator_mode_str,
+            )
+
+        # Advance to next question
+        next_q_index = curr_q_index + 1
+        int_id = session.get("interview_id")
+        interview = await db[INTERVIEWS_COLLECTION].find_one({"interview_id": int_id}) if int_id else None
+        interview_title = interview.get("title", "Technical Assessment") if interview else "Technical Assessment"
+
+        cursor = db[RESPONSES_COLLECTION].find({"session_id": session_id}, {"question_text": 1})
+        if hasattr(cursor, "to_list"):
+            res = cursor.to_list(length=100)
+            prev_docs = await res if hasattr(res, "__await__") else res
+        elif hasattr(cursor, "__await__"):
+            prev_docs = await cursor
+        else:
+            prev_docs = cursor
+        if not isinstance(prev_docs, list):
+            prev_docs = []
+        prev_questions = [p.get("question_text", "") for p in prev_docs if isinstance(p, dict)]
+        all_asked = prev_questions + [question_text]
+
+        target_role = session.get("selected_role") or InterviewSessionService._resolve_interview_role({}, interview)
+        interview_or = [{"interview_id": int_id}, {"interview_id": None}]
+        target_type = "coding" if next_q_index >= total_target else "conceptual"
+        diff_or = [{"difficulty": curr_diff.value}, {"difficulty": None}, {"difficulty": {"$exists": False}}]
+
+        stored_next_q = None
+        try:
+            query_tier1 = {
+                "$and": [
+                    {"$or": interview_or},
+                    {"$or": diff_or},
+                ],
+                "question_text": {"$nin": all_asked},
+                "question_type": target_type,
+            }
+            if target_role:
+                query_tier1["role"] = target_role
+            stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier1)
+
+            if not stored_next_q:
+                query_tier2 = {
+                    "$or": interview_or,
+                    "question_text": {"$nin": all_asked},
+                    "question_type": target_type,
+                }
+                if target_role:
+                    query_tier2["role"] = target_role
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier2)
+
+            if not stored_next_q:
+                query_tier3 = {
+                    "$or": interview_or,
+                    "question_text": {"$nin": all_asked},
+                }
+                if target_role:
+                    query_tier3["role"] = target_role
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier3)
+        except Exception as e:
+            logger.warning("Error querying stored question bank on skip progression: %s", e)
+
+        if stored_next_q and stored_next_q.get("question_text"):
+            next_q_gen = {
+                "question_text": stored_next_q["question_text"],
+                "topic": stored_next_q.get("topic", interview_title),
+                "question_type": stored_next_q.get("question_type", target_type),
+                "expected_answer": stored_next_q.get("expected_answer"),
+                "keywords": stored_next_q.get("keywords") or [],
+            }
+        else:
+            try:
+                next_q_gen = await provider.generate_question(
+                    topic=interview_title,
+                    instructions=interview.get("instructions", "") if interview else "",
+                    difficulty=curr_diff,
+                    question_index=next_q_index,
+                    previous_questions=all_asked,
+                )
+            except (AIProviderUnavailableError, AIProviderError) as exc:
+                logger.error("AI provider failure generating next question on skip: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Question generation service is temporarily unavailable: {str(exc)}",
+                )
+
+        try:
+            await db[RESPONSES_COLLECTION].insert_one(response_doc)
+        except pymongo.errors.DuplicateKeyError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Question {curr_q_index} has already been answered or skipped for this session.",
+            )
+
+        coding_spec_next = None
+        if next_q_gen.get("question_type") == "coding":
+            coding_spec_next = CodingChallengeService.get_candidate_challenge_spec(next_q_gen["question_text"])
+
+        await db[SESSIONS_COLLECTION].update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "current_question_index": next_q_index,
+                    "current_difficulty": curr_diff.value,
+                    "active_question": {
+                        "question_text": next_q_gen["question_text"],
+                        "topic": next_q_gen["topic"],
+                        "difficulty": curr_diff.value,
+                        "question_type": next_q_gen.get("question_type", target_type),
+                        "coding_spec": coding_spec_next,
+                        "expected_answer": next_q_gen.get("expected_answer"),
+                        "keywords": next_q_gen.get("keywords") or [],
+                    },
+                    "updated_at": now,
+                }
+            },
+        )
+
+        time_remaining = max(0, int((expires_at - now).total_seconds()))
+
+        next_question_resp = SessionQuestionResponse(
+            session_id=session_id,
+            assignment_id=session["assignment_id"],
+            interview_title=interview_title,
+            question_index=next_q_index,
+            total_questions=total_target,
+            difficulty=curr_diff,
+            question_text=next_q_gen["question_text"],
+            topic=next_q_gen["topic"],
+            question_type=next_q_gen.get("question_type", target_type),
+            coding_spec=coding_spec_next,
+            time_remaining_seconds=time_remaining,
+            evaluator_mode=evaluator_mode_str,
+        )
+
+        return SubmitAnswerResponse(
+            session_id=session_id,
+            question_index=curr_q_index,
+            evaluated_score=None,
+            feedback="Question skipped by candidate.",
+            strengths=[],
+            improvements=[],
+            next_difficulty=curr_diff,
+            difficulty_rationale="Question skipped by candidate; maintaining current difficulty level.",
+            is_session_completed=False,
+            is_skipped=True,
+            next_question=next_question_resp,
+            scorecard_id=None,
+            evaluator_mode=evaluator_mode_str,
         )
 
     @staticmethod
@@ -1306,22 +1714,21 @@ class InterviewSessionService:
                     detail=f"Interview session '{target_session_id}' is still in progress. The performance report is available upon interview completion.",
                 )
         else:
-            # Locate completed session
-            cursor = db[SESSIONS_COLLECTION].find({
-                "assignment_id": assignment_id,
-                "session_status": SessionStatus.COMPLETED.value,
-            })
-            if hasattr(cursor, "sort") and callable(cursor.sort):
-                cursor = cursor.sort("completed_at", pymongo.DESCENDING)
-            if hasattr(cursor, "to_list"):
-                res = cursor.to_list(length=5)
-                completed_sessions = await res if hasattr(res, "__await__") else res
-            elif hasattr(cursor, "__await__"):
-                completed_sessions = await cursor
+            # Query all sessions for this assignment to inspect current session lifecycle
+            all_sess_cursor = db[SESSIONS_COLLECTION].find({"assignment_id": assignment_id})
+            if hasattr(all_sess_cursor, "sort") and callable(all_sess_cursor.sort):
+                all_sess_cursor = all_sess_cursor.sort("created_at", pymongo.DESCENDING)
+            if hasattr(all_sess_cursor, "to_list"):
+                res = all_sess_cursor.to_list(length=10)
+                all_sessions = await res if hasattr(res, "__await__") else res
+            elif hasattr(all_sess_cursor, "__await__"):
+                all_sessions = await all_sess_cursor
             else:
-                completed_sessions = cursor
+                all_sessions = all_sess_cursor
+            if not isinstance(all_sessions, list):
+                all_sessions = []
 
-            if not completed_sessions or not isinstance(completed_sessions, list):
+            if not all_sessions:
                 any_sess_call = db[SESSIONS_COLLECTION].find_one({"assignment_id": assignment_id})
                 any_sess = await any_sess_call if hasattr(any_sess_call, "__await__") else any_sess_call
                 if any_sess and any_sess.get("session_status") == SessionStatus.IN_PROGRESS.value:
@@ -1329,6 +1736,23 @@ class InterviewSessionService:
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Interview session is still in progress. The performance report is available upon interview completion.",
                     )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No completed interview session found for assignment '{assignment_id}'.",
+                )
+
+            # Prevent returning stale report from an older session if the assignment has an in-progress session
+            latest_session = all_sessions[0]
+            if latest_session.get("session_status") == SessionStatus.IN_PROGRESS.value:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Interview session is still in progress. The performance report is available upon interview completion.",
+                )
+
+            completed_sessions = [
+                s for s in all_sessions if s.get("session_status") == SessionStatus.COMPLETED.value
+            ]
+            if not completed_sessions:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"No completed interview session found for assignment '{assignment_id}'.",
@@ -1364,67 +1788,92 @@ class InterviewSessionService:
         if not isinstance(raw_responses, list):
             raw_responses = []
 
+        total_questions_target = session.get("total_questions_target", len(raw_responses) or 5)
+        answered_count = len([r for r in raw_responses if not r.get("is_skipped") and r.get("status") != "skipped"])
+        skipped_count = len([r for r in raw_responses if r.get("is_skipped") or r.get("status") == "skipped"])
+        evaluated_count = len([r for r in raw_responses if not r.get("is_skipped") and r.get("status") != "skipped" and r.get("evaluation_score") is not None])
+
         response_summaries = []
         for r in raw_responses:
+            is_skp = bool(r.get("is_skipped") or r.get("status") == "skipped")
+            stat_val = "skipped" if is_skp else r.get("status", "answered")
+            eval_score_val = float(r["evaluation_score"]) if r.get("evaluation_score") is not None else None
             response_summaries.append(
                 ResponseSummary(
                     question_index=r["question_index"],
                     question_text=r["question_text"],
                     difficulty=QuestionDifficulty(r["difficulty"]),
                     topic=r.get("topic", "Technical Assessment"),
-                    answer_text=r["answer_text"],
-                    evaluation_score=r["evaluation_score"],
-                    score=r["evaluation_score"],
-                    feedback=r["evaluation_feedback"],
+                    answer_text=r.get("answer_text", "(Question skipped by candidate)" if is_skp else ""),
+                    evaluation_score=eval_score_val,
+                    score=eval_score_val,
+                    feedback=r.get("evaluation_feedback", "Question was skipped by candidate." if is_skp else ""),
                     strengths=r.get("strengths", []),
                     improvements=r.get("improvements", []),
                     difficulty_adjustment_rationale=r.get("difficulty_adjustment_rationale", ""),
                     question_type=r.get("question_type", "conceptual"),
                     language=r.get("language"),
                     code_execution_summary=r.get("code_execution_summary"),
+                    status=stat_val,
+                    is_skipped=is_skp,
                 )
             )
 
         # Aggregate topic-wise performance
-        topic_groups: Dict[str, List[float]] = {}
+        topic_scores: Dict[str, List[float]] = {}
+        topic_all_questions: Dict[str, List[Dict[str, Any]]] = {}
         topic_feedback: Dict[str, List[str]] = {}
         for r in raw_responses:
             topic_name = _format_topic_name(r.get("topic"))
-            topic_groups.setdefault(topic_name, []).append(float(r.get("evaluation_score", 0.0)))
+            topic_all_questions.setdefault(topic_name, []).append(r)
+            if not r.get("is_skipped") and r.get("status") != "skipped" and r.get("evaluation_score") is not None:
+                topic_scores.setdefault(topic_name, []).append(float(r["evaluation_score"]))
             if r.get("improvements"):
                 topic_feedback.setdefault(topic_name, []).extend(r["improvements"])
 
         topic_items: List[TopicPerformanceItem] = []
         actionable_priorities: List[ActionablePriorityItem] = []
 
-        for t_name, scores in topic_groups.items():
-            q_count = len(scores)
-            avg = round(sum(scores) / max(1, q_count), 1)
-            min_s = round(min(scores), 1)
-            max_s = round(max(scores), 1)
+        for t_name, all_q in topic_all_questions.items():
+            scores = topic_scores.get(t_name, [])
+            total_tested = len(all_q)
+            eval_tested = len(scores)
 
-            is_limited = q_count < 2
-            if is_limited:
-                evidence_lvl = "limited"
-                note = "Limited evidence: Evaluated based on 1 question. Consider this an initial practice indicator rather than a conclusive skill assessment."
-            elif q_count == 2:
-                evidence_lvl = "moderate"
-                note = "Evaluated across 2 questions. Representative sample."
-            else:
-                evidence_lvl = "sufficient"
-                note = f"Evaluated across {q_count} questions. Strong evidence basis."
+            if eval_tested > 0:
+                avg = round(sum(scores) / eval_tested, 1)
+                min_s = round(min(scores), 1)
+                max_s = round(max(scores), 1)
 
-            if avg >= 7.0:
-                cat = "strength"
-            elif avg >= 5.0:
-                cat = "moderate"
+                is_limited = eval_tested < 2
+                if is_limited:
+                    evidence_lvl = "limited"
+                    note = f"Limited evidence: Evaluated on 1 question ({total_tested - eval_tested} skipped). Consider this an initial practice indicator."
+                elif eval_tested == 2:
+                    evidence_lvl = "moderate"
+                    note = "Evaluated across 2 questions. Representative sample."
+                else:
+                    evidence_lvl = "sufficient"
+                    note = f"Evaluated across {eval_tested} questions. Strong evidence basis."
+
+                if avg >= 7.0:
+                    cat = "strength"
+                elif avg >= 5.0:
+                    cat = "moderate"
+                else:
+                    cat = "weakness"
             else:
+                avg = 0.0
+                min_s = 0.0
+                max_s = 0.0
                 cat = "weakness"
+                is_limited = True
+                evidence_lvl = "limited"
+                note = f"All {total_tested} question(s) in this topic were skipped by candidate. No evaluation score recorded."
 
             topic_items.append(
                 TopicPerformanceItem(
                     topic=t_name,
-                    questions_tested=q_count,
+                    questions_tested=total_tested,
                     average_score=avg,
                     min_score=min_s,
                     max_score=max_s,
@@ -1435,11 +1884,14 @@ class InterviewSessionService:
                 )
             )
 
-            # Build actionable priorities for weak topics (< 6.5) or topics with improvement suggestions
-            if avg < 6.5 or topic_feedback.get(t_name):
-                priority_lvl = "high" if avg < 5.0 else "medium"
-                specific_gap = f" Evaluator notes: '{topic_feedback[t_name][0]}'" if topic_feedback.get(t_name) else ""
-                reason_text = f"Average score of {avg}/10 across {q_count} question(s).{specific_gap}"
+            # Build actionable priorities for weak topics (< 6.5) or topics where questions were skipped
+            if eval_tested == 0 or avg < 6.5 or topic_feedback.get(t_name):
+                priority_lvl = "high" if (eval_tested == 0 or avg < 5.0) else "medium"
+                if eval_tested == 0:
+                    reason_text = f"Questions in '{t_name}' were skipped during the interview. Revision recommended to build baseline confidence."
+                else:
+                    specific_gap = f" Evaluator notes: '{topic_feedback[t_name][0]}'" if topic_feedback.get(t_name) else ""
+                    reason_text = f"Average score of {avg}/10 across {eval_tested} evaluated question(s).{specific_gap}"
 
                 steps = [
                     f"Review core technical principles and standard architecture definitions for {t_name}.",
@@ -1487,6 +1939,10 @@ class InterviewSessionService:
             evaluator_mode=scorecard.get("evaluator_mode", "mock_rule_engine"),
             difficulty_progression=scorecard.get("difficulty_progression", []),
             completed_at=completed_timestamp,
+            total_questions_assigned=total_questions_target,
+            questions_answered=answered_count,
+            questions_skipped=skipped_count,
+            questions_evaluated=evaluated_count,
             topic_breakdown=topic_items,
             actionable_priorities=actionable_priorities,
             video_recommendations=video_items,

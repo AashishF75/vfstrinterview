@@ -383,33 +383,49 @@ class MockRuleEngineProvider(BaseInterviewAIProvider):
             }
 
         scores = [
-            float(r.get("evaluation_score", r.get("score", 0.0)))
-            for r in responses if isinstance(r, dict)
+            float(r.get("evaluation_score") if r.get("evaluation_score") is not None else r.get("score", 0.0))
+            for r in responses
+            if isinstance(r, dict)
+            and not r.get("is_skipped")
+            and r.get("status") != "skipped"
+            and (r.get("evaluation_score") is not None or r.get("score") is not None)
         ]
+        skipped_count = len([r for r in responses if isinstance(r, dict) and (r.get("is_skipped") or r.get("status") == "skipped")])
+
         if not scores:
-            overall = 0.0
-        else:
-            overall = round(sum(scores) / len(scores), 1)
+            return {
+                "overall_score": 0.0,
+                "percentage_score": 0.0,
+                "performance_level": "Needs Improvement",
+                "summary_feedback": f"All questions in '{interview_title}' were skipped by the candidate. No responses were submitted for technical evaluation.",
+                "strengths": [],
+                "areas_for_growth": ["Attempt and submit answers to interview questions to demonstrate technical competencies."],
+            }
+
+        overall = round(sum(scores) / len(scores), 1)
         percentage = round((overall / 10.0) * 100.0, 1)
+
+        skip_note = f" (Note: Evaluated across {len(scores)} answered question(s); {skipped_count} question(s) were skipped)." if skipped_count > 0 else ""
 
         if overall >= 8.5:
             perf_level = "Exceptional"
-            summary = f"Outstanding performance across all evaluated topics in '{interview_title}'. Demonstrates strong mastery of networking architecture and protocols."
+            summary = f"Outstanding performance across all evaluated topics in '{interview_title}'. Demonstrates strong mastery of core architecture and protocols.{skip_note}"
         elif overall >= 7.0:
             perf_level = "Proficient"
-            summary = f"Solid technical competence demonstrated in '{interview_title}'. Consistent understanding of core engineering principles."
+            summary = f"Solid technical competence demonstrated in '{interview_title}'. Consistent understanding of core engineering principles.{skip_note}"
         elif overall >= 5.0:
             perf_level = "Satisfactory"
-            summary = f"Meets baseline expectations for '{interview_title}', but requires further revision on protocol mechanics and edge cases."
+            summary = f"Meets baseline expectations for '{interview_title}', but requires further revision on protocol mechanics and edge cases.{skip_note}"
         else:
             perf_level = "Needs Improvement"
-            summary = f"Significant conceptual gaps identified in '{interview_title}'. Thorough review of foundational networking concepts is advised."
+            summary = f"Significant conceptual gaps identified in '{interview_title}'. Thorough review of foundational engineering concepts is advised.{skip_note}"
 
         all_strengths = []
         all_improvements = []
         for r in responses:
-            all_strengths.extend(r.get("strengths", []))
-            all_improvements.extend(r.get("improvements", []))
+            if not r.get("is_skipped") and r.get("status") != "skipped":
+                all_strengths.extend(r.get("strengths", []))
+                all_improvements.extend(r.get("improvements", []))
 
         return {
             "overall_score": overall,
@@ -1105,9 +1121,23 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
             }
 
         valid_scores = [
-            float(r.get("evaluation_score", r.get("score", 0.0)))
-            for r in responses if isinstance(r, dict)
+            float(r.get("evaluation_score") if r.get("evaluation_score") is not None else r.get("score", 0.0))
+            for r in responses
+            if isinstance(r, dict)
+            and not r.get("is_skipped")
+            and r.get("status") != "skipped"
+            and (r.get("evaluation_score") is not None or r.get("score") is not None)
         ]
+        if not valid_scores:
+            return {
+                "overall_score": 0.0,
+                "percentage_score": 0.0,
+                "performance_level": "Needs Improvement",
+                "summary_feedback": f"All questions in '{interview_title}' were skipped by the candidate. No responses were submitted for technical evaluation.",
+                "strengths": [],
+                "areas_for_growth": ["Attempt and submit answers to interview questions to demonstrate technical competencies."],
+            }
+
         calc_overall = round(sum(valid_scores) / max(1, len(valid_scores)), 1)
         calc_percentage = round((calc_overall / 10.0) * 100.0, 1)
 
@@ -1124,12 +1154,17 @@ class GeminiInterviewAIProvider(BaseInterviewAIProvider):
         )
         resp_summary_lines = []
         for r in responses:
-            score_val = r.get("evaluation_score", r.get("score", 0.0))
-            feedback_val = r.get("evaluation_feedback", r.get("feedback", ""))
-            resp_summary_lines.append(
-                f"Q{r.get('question_index')}: {r.get('question_text')} "
-                f"[{r.get('difficulty')} tier] - Score: {score_val}/10 - Feedback: {feedback_val}"
-            )
+            if r.get("is_skipped") or r.get("status") == "skipped":
+                resp_summary_lines.append(
+                    f"Q{r.get('question_index')}: {r.get('question_text')} [{r.get('difficulty')} tier] - Status: Skipped by candidate"
+                )
+            else:
+                score_val = r.get("evaluation_score", r.get("score", 0.0))
+                feedback_val = r.get("evaluation_feedback", r.get("feedback", ""))
+                resp_summary_lines.append(
+                    f"Q{r.get('question_index')}: {r.get('question_text')} "
+                    f"[{r.get('difficulty')} tier] - Score: {score_val}/10 - Feedback: {feedback_val}"
+                )
         user_prompt = (
             f"Interview Title: {interview_title}\n"
             f"Question Evaluations:\n" + "\n".join(resp_summary_lines) + "\n\n"
@@ -1801,9 +1836,23 @@ class NemotronInterviewAIProvider(BaseInterviewAIProvider):
             }
 
         valid_scores = [
-            float(r.get("evaluation_score", r.get("score", 0.0)))
-            for r in responses if isinstance(r, dict)
+            float(r.get("evaluation_score") if r.get("evaluation_score") is not None else r.get("score", 0.0))
+            for r in responses
+            if isinstance(r, dict)
+            and not r.get("is_skipped")
+            and r.get("status") != "skipped"
+            and (r.get("evaluation_score") is not None or r.get("score") is not None)
         ]
+        if not valid_scores:
+            return {
+                "overall_score": 0.0,
+                "percentage_score": 0.0,
+                "performance_level": "Needs Improvement",
+                "summary_feedback": f"All questions in '{interview_title}' were skipped by the candidate. No responses were submitted for technical evaluation.",
+                "strengths": [],
+                "areas_for_growth": ["Attempt and submit answers to interview questions to demonstrate technical competencies."],
+            }
+
         calc_overall = round(sum(valid_scores) / max(1, len(valid_scores)), 1)
         calc_percentage = round((calc_overall / 10.0) * 100.0, 1)
 
@@ -1820,12 +1869,17 @@ class NemotronInterviewAIProvider(BaseInterviewAIProvider):
         )
         resp_summary_lines = []
         for r in responses:
-            score_val = r.get("evaluation_score", r.get("score", 0.0))
-            feedback_val = r.get("evaluation_feedback", r.get("feedback", ""))
-            resp_summary_lines.append(
-                f"Q{r.get('question_index')}: {r.get('question_text')} "
-                f"[{r.get('difficulty')} tier] - Score: {score_val}/10 - Feedback: {feedback_val}"
-            )
+            if r.get("is_skipped") or r.get("status") == "skipped":
+                resp_summary_lines.append(
+                    f"Q{r.get('question_index')}: {r.get('question_text')} [{r.get('difficulty')} tier] - Status: Skipped by candidate"
+                )
+            else:
+                score_val = r.get("evaluation_score", r.get("score", 0.0))
+                feedback_val = r.get("evaluation_feedback", r.get("feedback", ""))
+                resp_summary_lines.append(
+                    f"Q{r.get('question_index')}: {r.get('question_text')} "
+                    f"[{r.get('difficulty')} tier] - Score: {score_val}/10 - Feedback: {feedback_val}"
+                )
         user_prompt = (
             f"Interview Title: {interview_title}\n"
             f"Question Evaluations:\n" + "\n".join(resp_summary_lines) + "\n\n"

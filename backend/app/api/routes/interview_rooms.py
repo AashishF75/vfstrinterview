@@ -191,6 +191,29 @@ async def submit_answer(
     )
 
 
+@router.post("/sessions/{session_id}/skip-question", response_model=SubmitAnswerResponse)
+async def skip_question(
+    session_id: str,
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Skips the active question without assigning an answer score.
+    Records the question as skipped and immediately advances to the next question,
+    or finalizes the interview session if on the final question.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewSessionService.skip_question(
+        db=db,
+        session_id=session_id,
+        student_user=current_student,
+    )
+
+
 @router.get("/sessions/{session_id}/scorecard", response_model=ScorecardResponse)
 async def get_session_scorecard(
     session_id: str,

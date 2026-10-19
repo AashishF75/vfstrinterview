@@ -603,6 +603,19 @@ export const submitInterviewCode = async (sessionId, { language, source_code }) 
   }
 };
 
+export const skipInterviewQuestion = async (sessionId) => {
+  try {
+    const response = await apiClient.post(`/api/interview-rooms/sessions/${sessionId}/skip-question`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to skip question',
+      status: error.response?.status,
+    };
+  }
+};
+
 export const getSessionScorecard = async (sessionId) => {
   try {
     const response = await apiClient.get(`/api/interview-rooms/sessions/${sessionId}/scorecard`);

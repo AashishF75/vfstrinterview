@@ -349,6 +349,34 @@ export default function StudentReport() {
                   <span>Evaluator Mode: {report.evaluator_mode}</span>
                 </div>
               </div>
+
+              {/* Question Accounting Metrics Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
+                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                  <div className="text-[10px] uppercase font-semibold text-slate-400">Assigned</div>
+                  <div className="text-sm font-bold text-white font-mono">
+                    {report.total_questions_assigned ?? (report.responses?.length || 0)}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                  <div className="text-[10px] uppercase font-semibold text-emerald-400">Answered</div>
+                  <div className="text-sm font-bold text-emerald-300 font-mono">
+                    {report.questions_answered ?? (report.responses?.filter(r => !r.is_skipped && r.status !== 'skipped').length || 0)}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                  <div className="text-[10px] uppercase font-semibold text-amber-400">Skipped</div>
+                  <div className="text-sm font-bold text-amber-300 font-mono">
+                    {report.questions_skipped ?? (report.responses?.filter(r => r.is_skipped || r.status === 'skipped').length || 0)}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                  <div className="text-[10px] uppercase font-semibold text-cyan-400">Evaluated</div>
+                  <div className="text-sm font-bold text-cyan-300 font-mono">
+                    {report.questions_evaluated ?? (report.responses?.filter(r => !r.is_skipped && r.status !== 'skipped' && (r.score ?? r.evaluation_score) != null).length || 0)}
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Score Metric Circular/Box Widget */}
@@ -648,6 +676,11 @@ export default function StudentReport() {
                         <span className="text-xs text-slate-600">•</span>
                         <span className="text-xs text-slate-300 font-semibold">{item.topic}</span>
                         {getDifficultyBadge(item.difficulty)}
+                        {(item.is_skipped || item.status === 'skipped') && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            Skipped
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs sm:text-sm text-white font-medium leading-relaxed">
                         {item.question_text}
@@ -655,20 +688,36 @@ export default function StudentReport() {
                     </div>
 
                     <div className="text-right shrink-0 bg-slate-950/80 px-3 py-1.5 rounded-xl border border-slate-800">
-                      <span className="text-sm font-bold text-cyan-300 font-mono">
-                        {item.score ?? item.evaluation_score}
-                      </span>
-                      <span className="text-xs text-slate-500"> / 10</span>
+                      {item.is_skipped || item.status === 'skipped' ? (
+                        <span className="text-xs font-semibold text-amber-400 font-mono">
+                          No score (Skipped)
+                        </span>
+                      ) : (
+                        <>
+                          <span className="text-sm font-bold text-cyan-300 font-mono">
+                            {item.score ?? item.evaluation_score ?? 0}
+                          </span>
+                          <span className="text-xs text-slate-500"> / 10</span>
+                        </>
+                      )}
                     </div>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800/60 text-xs font-mono text-slate-300 leading-relaxed overflow-x-auto">
-                    <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">Your Submitted Response:</div>
-                    {item.answer_text}
+                    <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">
+                      {item.is_skipped || item.status === 'skipped' ? 'Response Status:' : 'Your Submitted Response:'}
+                    </div>
+                    {item.is_skipped || item.status === 'skipped' ? (
+                      <span className="italic text-slate-400">Question was skipped by candidate without an answer submission.</span>
+                    ) : (
+                      item.answer_text
+                    )}
                   </div>
 
                   <div className="p-3 rounded-xl bg-indigo-950/20 border border-indigo-900/30 text-xs text-slate-300 leading-relaxed">
-                    <strong className="text-indigo-300 block mb-0.5">Evaluator Rubric Feedback:</strong>
+                    <strong className="text-indigo-300 block mb-0.5">
+                      {item.is_skipped || item.status === 'skipped' ? 'Interviewer / Audit Note:' : 'Evaluator Rubric Feedback:'}
+                    </strong>
                     {item.feedback}
                   </div>
 

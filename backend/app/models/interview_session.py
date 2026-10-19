@@ -170,13 +170,14 @@ class SubmitAnswerRequest(BaseModel):
 class SubmitAnswerResponse(BaseModel):
     session_id: str
     question_index: int
-    evaluated_score: float
+    evaluated_score: Optional[float] = None
     feedback: str
     strengths: List[str]
     improvements: List[str]
     next_difficulty: QuestionDifficulty
     difficulty_rationale: str
     is_session_completed: bool
+    is_skipped: Optional[bool] = False
     next_question: Optional[SessionQuestionResponse] = None
     scorecard_id: Optional[str] = None
     evaluator_mode: Optional[str] = None
@@ -189,7 +190,7 @@ class ResponseSummary(BaseModel):
     difficulty: QuestionDifficulty
     topic: Optional[str] = "Technical Assessment"
     answer_text: str
-    evaluation_score: float
+    evaluation_score: Optional[float] = None
     score: Optional[float] = None
     feedback: str
     strengths: List[str]
@@ -198,6 +199,8 @@ class ResponseSummary(BaseModel):
     question_type: Optional[str] = "conceptual"
     language: Optional[str] = None
     code_execution_summary: Optional[Dict[str, Any]] = None
+    status: Optional[str] = "answered"
+    is_skipped: Optional[bool] = False
 
 
 class ScorecardResponse(BaseModel):
@@ -276,6 +279,10 @@ class StudentPerformanceReportResponse(BaseModel):
     evaluator_mode: str
     difficulty_progression: List[str] = Field(default_factory=list)
     completed_at: datetime
+    total_questions_assigned: int = 5
+    questions_answered: int = 0
+    questions_skipped: int = 0
+    questions_evaluated: int = 0
     topic_breakdown: List[TopicPerformanceItem] = Field(default_factory=list)
     actionable_priorities: List[ActionablePriorityItem] = Field(default_factory=list)
     video_recommendations: List[VideoRecommendationItem] = Field(default_factory=list)
