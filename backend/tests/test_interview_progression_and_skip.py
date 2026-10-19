@@ -480,3 +480,402 @@ async def test_report_accounting_distinguishes_skipped_and_answered():
         assert s.status == "skipped"
         assert s.evaluation_score is None
         assert s.score is None
+
+
+@pytest.mark.anyio
+async def test_submit_non_final_answer_advances_to_next_question():
+    """
+    Verifies that InterviewSessionService.submit_answer:
+    1. Evaluates candidate answer via the configured provider.
+    2. Persists response with is_skipped=False, status="answered", and numeric evaluation_score.
+    3. Advances current_question_index in session state.
+    4. Automatically selects/generates next question.
+    5. Returns next_question in SubmitAnswerResponse with is_session_completed=False.
+    """
+    mock_db = MagicMock()
+    mock_sessions = MagicMock()
+    mock_sessions.find_one = AsyncMock()
+    mock_sessions.update_one = AsyncMock()
+    mock_responses = MagicMock()
+    mock_responses.find_one = AsyncMock(return_value=None)
+    mock_responses.insert_one = AsyncMock()
+    mock_interviews = MagicMock()
+    mock_interviews.find_one = AsyncMock(return_value={"interview_id": "int-1", "title": "Software Engineering"})
+    mock_questions = MagicMock()
+    mock_questions.find_one = AsyncMock(return_value={
+        "question_text": "Describe the principles of RESTful architecture.",
+        "topic": "Software Engineering",
+        "question_type": "conceptual",
+        "difficulty": "medium",
+    })
+
+    mock_db.__getitem__.side_effect = lambda name: {
+        "interview_sessions": mock_sessions,
+        "interview_responses": mock_responses,
+        "university_interviews": mock_interviews,
+        "interview_questions": mock_questions,
+    }[name]
+
+    student = make_student("stu-1", "241FA04001")
+    session_id = "test-session-submit-1"
+    now = utc_now()
+
+    mock_sessions.find_one.return_value = {
+        "session_id": session_id,
+        "interview_id": "int-1",
+        "assignment_id": "asgn-1",
+        "student_registration_number": "241FA04001",
+        "session_status": SessionStatus.IN_PROGRESS.value,
+        "current_question_index": 1,
+        "total_questions_target": 5,
+        "current_difficulty": "medium",
+        "expires_at": now + timedelta(minutes=45),
+        "active_question": {
+            "question_text": "What is normalization in relational databases?",
+            "topic": "Databases",
+            "difficulty": "medium",
+            "question_type": "conceptual",
+        },
+    }
+
+    mock_provider = AsyncMock()
+    mock_provider.get_mode = MagicMock(return_value=EvaluatorMode.MOCK_RULE_ENGINE)
+    mock_provider.evaluate_answer = AsyncMock(return_value={
+        "score": 8.5,
+        "feedback": "Clear explanation of 1NF, 2NF, and 3NF.",
+        "strengths": ["Comprehensive coverage of anomaly elimination."],
+        "improvements": ["Could briefly mention BCNF."],
+    })
+
+    with patch("app.services.interview_session_service.get_ai_provider", return_value=mock_provider):
+        response: SubmitAnswerResponse = await InterviewSessionService.submit_answer(
+            db=mock_db,
+            session_id=session_id,
+            answer_text="Normalization organizes data to reduce redundancy and improve data integrity across 1NF, 2NF, and 3NF.",
+            student_user=student,
+        )
+
+    # 1. Assert response properties
+    assert response.session_id == session_id
+    assert response.question_index == 1
+    assert response.is_skipped is False
+    assert response.is_session_completed is False
+    assert response.evaluated_score == 8.5
+    assert response.next_question is not None
+    assert response.next_question.question_index == 2
+    assert response.next_question.question_text == "Describe the principles of RESTful architecture."
+    assert response.scorecard_id is None
+
+    # 2. Assert response persisted
+    mock_responses.insert_one.assert_called_once()
+    saved_resp = mock_responses.insert_one.call_args[0][0]
+    assert saved_resp["session_id"] == session_id
+    assert saved_resp["question_index"] == 1
+    assert saved_resp["evaluation_score"] == 8.5
+    assert saved_resp["is_skipped"] is False
+    assert saved_resp["status"] == "answered"
+
+    # 3. Assert session updated to question 2
+    mock_sessions.update_one.assert_called_once()
+    update_filter, update_payload = mock_sessions.update_one.call_args[0]
+    assert update_filter == {"session_id": session_id}
+    assert update_payload["$set"]["current_question_index"] == 2
+    assert update_payload["$set"]["active_question"]["question_text"] == "Describe the principles of RESTful architecture."
+
+
+@pytest.mark.anyio
+async def test_submit_final_answer_completes_interview():
+    """
+    Verifies that InterviewSessionService.submit_answer on the final question:
+    1. Evaluates candidate answer.
+    2. Persists response with status="answered".
+    3. Generates scorecard with overall score.
+    4. Marks session and assignment as COMPLETED.
+    5. Returns is_session_completed=True, next_question=None, and scorecard_id.
+    """
+    mock_db = MagicMock()
+    mock_sessions = MagicMock()
+    mock_sessions.find_one = AsyncMock()
+    mock_sessions.update_one = AsyncMock()
+    mock_responses = MagicMock()
+    mock_responses.find_one = AsyncMock(return_value=None)
+    mock_responses.insert_one = AsyncMock()
+    mock_scorecards = MagicMock()
+    mock_scorecards.insert_one = AsyncMock()
+    mock_assignments = MagicMock()
+    mock_assignments.update_one = AsyncMock()
+
+    prior_responses = [
+        {"question_index": 1, "question_text": "Q1", "topic": "Databases", "difficulty": "medium", "score": 8.0, "is_skipped": False, "status": "answered"},
+        {"question_index": 2, "question_text": "Q2", "topic": "Databases", "difficulty": "medium", "score": 7.5, "is_skipped": False, "status": "answered"},
+        {"question_index": 3, "question_text": "Q3", "topic": "Databases", "difficulty": "hard", "score": 9.0, "is_skipped": False, "status": "answered"},
+        {"question_index": 4, "question_text": "Q4", "topic": "Databases", "difficulty": "hard", "score": 8.5, "is_skipped": False, "status": "answered"},
+    ]
+    cursor = MagicMock()
+    cursor.sort = MagicMock(return_value=cursor)
+    cursor.to_list = AsyncMock(return_value=prior_responses)
+    mock_responses.find = MagicMock(return_value=cursor)
+
+    mock_db.__getitem__.side_effect = lambda name: {
+        "interview_sessions": mock_sessions,
+        "interview_responses": mock_responses,
+        "interview_scorecards": mock_scorecards,
+        "student_interview_assignments": mock_assignments,
+    }[name]
+
+    student = make_student("stu-1", "241FA04001")
+    session_id = "test-session-submit-final"
+    now = utc_now()
+
+    mock_sessions.find_one.return_value = {
+        "session_id": session_id,
+        "interview_id": "int-1",
+        "assignment_id": "asgn-1",
+        "student_registration_number": "241FA04001",
+        "session_status": SessionStatus.IN_PROGRESS.value,
+        "current_question_index": 5,
+        "total_questions_target": 5,
+        "current_difficulty": "hard",
+        "expires_at": now + timedelta(minutes=45),
+        "active_question": {
+            "question_text": "Explain ACID properties and transaction isolation levels.",
+            "topic": "Databases",
+            "difficulty": "hard",
+            "question_type": "conceptual",
+        },
+    }
+
+    mock_provider = AsyncMock()
+    mock_provider.get_mode = MagicMock(return_value=EvaluatorMode.MOCK_RULE_ENGINE)
+    mock_provider.evaluate_answer = AsyncMock(return_value={
+        "score": 9.0,
+        "feedback": "Excellent breakdown of atomicity, consistency, isolation, and durability.",
+        "strengths": ["Thorough explanation of dirty reads and phantom reads."],
+        "improvements": [],
+    })
+    mock_provider.generate_scorecard_summary = AsyncMock(return_value={
+        "overall_score": 8.4,
+        "percentage_score": 84.0,
+        "performance_level": "Advanced",
+        "summary_feedback": "Demonstrated advanced database expertise across all 5 evaluated questions.",
+        "strengths": ["Database fundamentals", "Transaction isolation"],
+        "areas_for_growth": ["Distributed concurrency"],
+    })
+
+    with patch("app.services.interview_session_service.get_ai_provider", return_value=mock_provider):
+        response: SubmitAnswerResponse = await InterviewSessionService.submit_answer(
+            db=mock_db,
+            session_id=session_id,
+            answer_text="ACID guarantees atomicity, consistency, isolation, and durability in DBMS transactions.",
+            student_user=student,
+        )
+
+    # 1. Assert completed response
+    assert response.is_session_completed is True
+    assert response.next_question is None
+    assert response.scorecard_id is not None
+    assert response.evaluated_score == 9.0
+
+    # 2. Assert scorecard saved
+    mock_scorecards.insert_one.assert_called_once()
+    saved_sc = mock_scorecards.insert_one.call_args[0][0]
+    assert saved_sc["session_id"] == session_id
+    assert saved_sc["questions_answered"] == 5
+    assert saved_sc["questions_skipped"] == 0
+    assert saved_sc["overall_score"] == 8.4
+
+    # 3. Assert session marked COMPLETED
+    mock_sessions.update_one.assert_called_once()
+    update_filter, update_payload = mock_sessions.update_one.call_args[0]
+    assert update_filter == {"session_id": session_id}
+    assert update_payload["$set"]["session_status"] == SessionStatus.COMPLETED.value
+
+
+@pytest.mark.anyio
+async def test_submit_duplicate_rejected_with_409():
+    """
+    Verifies that attempting to submit an answer for an already answered or skipped
+    question index raises HTTP 409 Conflict.
+    """
+    mock_db = MagicMock()
+    mock_sessions = MagicMock()
+    mock_responses = MagicMock()
+    mock_responses.find_one = AsyncMock(return_value={"response_id": "resp-existing", "question_index": 2})
+
+    mock_db.__getitem__.side_effect = lambda name: {
+        "interview_sessions": mock_sessions,
+        "interview_responses": mock_responses,
+    }[name]
+
+    student = make_student("stu-1", "241FA04001")
+    session_id = "test-session-submit-dup"
+    now = utc_now()
+
+    mock_sessions.find_one = AsyncMock(return_value={
+        "session_id": session_id,
+        "interview_id": "int-1",
+        "assignment_id": "asgn-1",
+        "student_registration_number": "241FA04001",
+        "session_status": SessionStatus.IN_PROGRESS.value,
+        "current_question_index": 2,
+        "total_questions_target": 5,
+        "current_difficulty": "medium",
+        "expires_at": now + timedelta(minutes=45),
+        "active_question": {"question_text": "Q2", "topic": "Networking", "difficulty": "medium", "question_type": "conceptual"},
+    })
+
+    with pytest.raises(HTTPException) as exc_info:
+        await InterviewSessionService.submit_answer(
+            db=mock_db,
+            session_id=session_id,
+            answer_text="Some answer text",
+            student_user=student,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already been submitted or skipped" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_submit_to_completed_session_rejected_with_400():
+    """
+    Verifies that submitting an answer to an already completed session raises HTTP 400.
+    """
+    mock_db = MagicMock()
+    mock_sessions = MagicMock()
+    mock_sessions.find_one = AsyncMock(return_value={
+        "session_id": "sess-completed",
+        "student_registration_number": "241FA04001",
+        "session_status": SessionStatus.COMPLETED.value,
+    })
+
+    mock_db.__getitem__.side_effect = lambda name: {
+        "interview_sessions": mock_sessions,
+    }[name]
+
+    student = make_student("stu-1", "241FA04001")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await InterviewSessionService.submit_answer(
+            db=mock_db,
+            session_id="sess-completed",
+            answer_text="Some answer text",
+            student_user=student,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "already completed" in exc_info.value.detail.lower()
+
+
+@pytest.mark.anyio
+async def test_submit_blank_answer_rejected_with_422():
+    """
+    Verifies that submitting a blank or whitespace-only answer raises HTTP 422.
+    """
+    mock_db = MagicMock()
+    student = make_student("stu-1", "241FA04001")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await InterviewSessionService.submit_answer(
+            db=mock_db,
+            session_id="sess-1",
+            answer_text="   \n\t  ",
+            student_user=student,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "cannot be blank" in exc_info.value.detail.lower()
+
+
+@pytest.mark.anyio
+async def test_submit_cross_student_access_rejected_with_403():
+    """
+    Verifies that Candidate A cannot submit answers to Candidate B's interview session.
+    """
+    mock_db = MagicMock()
+    mock_sessions = MagicMock()
+    mock_sessions.find_one = AsyncMock(return_value={
+        "session_id": "sess-cross-submit",
+        "student_registration_number": "241FA04999",  # Belongs to candidate 241FA04999
+        "session_status": SessionStatus.IN_PROGRESS.value,
+        "current_question_index": 1,
+    })
+
+    mock_db.__getitem__.side_effect = lambda name: {
+        "interview_sessions": mock_sessions,
+    }[name]
+
+    student_attacker = make_student("stu-1", "241FA04001")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await InterviewSessionService.submit_answer(
+            db=mock_db,
+            session_id="sess-cross-submit",
+            answer_text="Attempting to submit answer to another candidate session",
+            student_user=student_attacker,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "access denied" in exc_info.value.detail.lower()
+
+
+@pytest.mark.anyio
+async def test_submit_provider_failure_preserves_session_unmodified():
+    """
+    Verifies that when AI provider evaluation fails (HTTP 503):
+    1. An HTTP 503 exception is raised.
+    2. No response record is inserted into interview_responses.
+    3. The session state is not advanced or marked completed.
+    """
+    from app.services.ai_provider import AIProviderError
+
+    mock_db = MagicMock()
+    mock_sessions = MagicMock()
+    mock_responses = MagicMock()
+    mock_responses.find_one = AsyncMock(return_value=None)
+    mock_responses.insert_one = AsyncMock()
+    mock_interviews = MagicMock()
+
+    mock_db.__getitem__.side_effect = lambda name: {
+        "interview_sessions": mock_sessions,
+        "interview_responses": mock_responses,
+        "university_interviews": mock_interviews,
+    }[name]
+
+    student = make_student("stu-1", "241FA04001")
+    session_id = "test-session-provider-fail"
+    now = utc_now()
+
+    mock_sessions.find_one = AsyncMock(return_value={
+        "session_id": session_id,
+        "interview_id": "int-1",
+        "assignment_id": "asgn-1",
+        "student_registration_number": "241FA04001",
+        "session_status": SessionStatus.IN_PROGRESS.value,
+        "current_question_index": 1,
+        "total_questions_target": 5,
+        "current_difficulty": "medium",
+        "expires_at": now + timedelta(minutes=45),
+        "active_question": {"question_text": "What is DNS?", "topic": "Networking", "difficulty": "medium", "question_type": "conceptual"},
+    })
+
+    mock_provider = AsyncMock()
+    mock_provider.get_mode = MagicMock(return_value=EvaluatorMode.GEMINI)
+    mock_provider.evaluate_answer = AsyncMock(side_effect=AIProviderError("Upstream evaluation service unavailable"))
+
+    with patch("app.services.interview_session_service.get_ai_provider", return_value=mock_provider):
+        with pytest.raises(HTTPException) as exc_info:
+            await InterviewSessionService.submit_answer(
+                db=mock_db,
+                session_id=session_id,
+                answer_text="DNS resolves domain names to IP addresses.",
+                student_user=student,
+            )
+
+    assert exc_info.value.status_code == 503
+    assert "temporarily unavailable" in exc_info.value.detail.lower()
+
+    # Verify no response was saved
+    mock_responses.insert_one.assert_not_called()
+    # Verify session was NOT updated
+    mock_sessions.update_one.assert_not_called()

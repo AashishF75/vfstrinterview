@@ -593,18 +593,22 @@ export default function InterviewRoom() {
           return;
         }
 
-        setIsTranscribingAudio(true);
-        setSpeechError(null);
-        const res = await transcribeInterviewAudio(sessionId, audioBlob);
-        setIsTranscribingAudio(false);
-
-        if (res.success && res.data?.transcript?.trim()) {
-          const transcript = res.data.transcript.trim();
-          setAnswerText((prev) => (prev.trim() ? `${prev.trim()} ${transcript}` : transcript));
+        try {
+          setIsTranscribingAudio(true);
           setSpeechError(null);
-        } else {
-          const errMsg = res.error || 'No speech detected in audio clip.';
-          setSpeechError(`${errMsg} You can speak again, use browser dictation, or type manually.`);
+          const res = await transcribeInterviewAudio(sessionId, audioBlob);
+          if (res.success && res.data?.transcript?.trim()) {
+            const transcript = res.data.transcript.trim();
+            setAnswerText((prev) => (prev.trim() ? `${prev.trim()} ${transcript}` : transcript));
+            setSpeechError(null);
+          } else {
+            const errMsg = res.error || 'No speech detected in audio clip.';
+            setSpeechError(`${errMsg} You can speak again, use browser dictation, or type manually.`);
+          }
+        } catch (err) {
+          setSpeechError(err.message || 'Audio transcription encountered an error. You can continue typing manually.');
+        } finally {
+          setIsTranscribingAudio(false);
         }
       };
 
@@ -1149,6 +1153,7 @@ export default function InterviewRoom() {
     setProgressionError(null);
     setInterimTranscript('');
     setSpeechError(null);
+    setError(null);
 
     if (nextText && !isMuted) {
       speakQuestion(nextText);
@@ -1157,74 +1162,119 @@ export default function InterviewRoom() {
 
   const handleSubmitAnswer = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!answerText.trim() || submitting || isSkipping || isTranscribingAudio || !sessionId) return;
+    if (!answerText.trim() || submitting || isSkipping || !sessionId) return;
 
     handleStopSpeech();
     stopVoiceRecognition();
     if (isRecordingAudio) {
       cancelDeepgramRecording();
     }
+    setIsTranscribingAudio(false);
+    setInterimTranscript('');
+    setSpeechError(null);
 
+    submissionSeqRef.current += 1;
+    const currentSeq = submissionSeqRef.current;
     setSubmitting(true);
     setError(null);
     setProgressionError(null);
 
-    submissionSeqRef.current += 1;
-    const currentSeq = submissionSeqRef.current;
+    try {
+      const isCoding = activeQuestion?.question_type === 'coding';
+      const lang = selectedLanguage.toLowerCase() === 'c++' ? 'cpp' : selectedLanguage.toLowerCase();
 
-    const isCoding = activeQuestion?.question_type === 'coding';
-    const lang = selectedLanguage.toLowerCase() === 'c++' ? 'cpp' : selectedLanguage.toLowerCase();
+      let res;
+      if (isCoding) {
+        res = await submitInterviewCode(sessionId, {
+          language: lang,
+          source_code: answerText.trim(),
+        });
+      } else {
+        res = await submitInterviewAnswer(sessionId, answerText.trim());
+      }
 
-    let res;
-    if (isCoding) {
-      res = await submitInterviewCode(sessionId, {
-        language: lang,
-        source_code: answerText.trim(),
-      });
-    } else {
-      res = await submitInterviewAnswer(sessionId, answerText.trim());
-    }
+      if (currentSeq !== submissionSeqRef.current) return;
 
-    if (currentSeq !== submissionSeqRef.current) return;
-    setSubmitting(false);
+      if (!res.success) {
+        // Duplicate submission conflict guard (409) or session already completed (400)
+        if (
+          res.status === 409 ||
+          res.status === 400 ||
+          (res.error && (res.error.toLowerCase().includes('already been') || res.error.toLowerCase().includes('already completed')))
+        ) {
+          try {
+            const curRes = await getCurrentQuestion(sessionId);
+            if (curRes.success && curRes.data) {
+              const isComp = curRes.data.is_session_completed || curRes.data.session_status === 'completed';
+              const nextIdx = curRes.data.question_index ?? curRes.data.current_question_index;
+              if (isComp) {
+                setIsCompleted(true);
+                const scRes = await getSessionScorecard(sessionId);
+                if (scRes.success && scRes.data) setScorecard(scRes.data);
+                return;
+              } else if (nextIdx > (activeQuestion?.question_index || 1)) {
+                advanceToNextQuestionData(curRes.data);
+                return;
+              }
+            } else {
+              const scRes = await getSessionScorecard(sessionId);
+              if (scRes.success && scRes.data) {
+                setIsCompleted(true);
+                setScorecard(scRes.data);
+                return;
+              }
+            }
+          } catch {}
+        }
 
-    if (!res.success) {
-      // Duplicate submission conflict guard (409): check if backend already advanced to next question
-      if (res.status === 409 || (res.error && res.error.toLowerCase().includes('already been'))) {
+        setError(res.error || 'Failed to submit solution. Please check compiler output or retry.');
+        return;
+      }
+
+      const data = res.data;
+      const isFinished = !!(data.is_session_completed || data.is_completed || data.session_status === 'completed');
+      const nextQ = data.next_question || data.active_question;
+
+      if (isFinished) {
+        setIsCompleted(true);
+        try {
+          const scRes = await getSessionScorecard(sessionId);
+          if (scRes.success && scRes.data) {
+            setScorecard(scRes.data);
+          } else {
+            setTimeout(async () => {
+              try {
+                const retrySc = await getSessionScorecard(sessionId);
+                if (retrySc.success && retrySc.data) setScorecard(retrySc.data);
+              } catch {}
+            }, 1000);
+          }
+        } catch {}
+      } else if (nextQ) {
+        advanceToNextQuestionData(nextQ);
+      } else {
+        // Fallback: If non-final answer confirmed but next_question payload was omitted, authoritatively fetch next question
         try {
           const curRes = await getCurrentQuestion(sessionId);
           if (curRes.success && curRes.data) {
-            const isComp = curRes.data.is_session_completed || curRes.data.session_status === 'completed';
-            const nextIdx = curRes.data.question_index ?? curRes.data.current_question_index;
-            if (isComp) {
+            if (curRes.data.is_session_completed || curRes.data.session_status === 'completed') {
               setIsCompleted(true);
               const scRes = await getSessionScorecard(sessionId);
               if (scRes.success && scRes.data) setScorecard(scRes.data);
-              return;
-            } else if (nextIdx > (activeQuestion?.question_index || 1)) {
+            } else {
               advanceToNextQuestionData(curRes.data);
-              return;
             }
           }
         } catch {}
       }
-
-      setError(res.error || 'Failed to submit solution. Please check compiler output or retry.');
-      return;
-    }
-
-    const data = res.data;
-
-    if (data.is_session_completed) {
-      setIsCompleted(true);
-      try {
-        const scRes = await getSessionScorecard(sessionId);
-        if (scRes.success && scRes.data) {
-          setScorecard(scRes.data);
-        }
-      } catch {}
-    } else if (data.next_question) {
-      advanceToNextQuestionData(data.next_question);
+    } catch (err) {
+      if (currentSeq === submissionSeqRef.current) {
+        setError(err.message || 'Error occurred while submitting your answer. Please retry.');
+      }
+    } finally {
+      if (currentSeq === submissionSeqRef.current) {
+        setSubmitting(false);
+      }
     }
   };
 
@@ -1253,7 +1303,11 @@ export default function InterviewRoom() {
       setShowSkipModal(false);
 
       if (!res.success) {
-        if (res.status === 409 || (res.error && res.error.toLowerCase().includes('already been'))) {
+        if (
+          res.status === 409 ||
+          res.status === 400 ||
+          (res.error && (res.error.toLowerCase().includes('already been') || res.error.toLowerCase().includes('already completed')))
+        ) {
           try {
             const curRes = await getCurrentQuestion(sessionId);
             if (curRes.success && curRes.data) {
@@ -1268,6 +1322,13 @@ export default function InterviewRoom() {
                 advanceToNextQuestionData(curRes.data);
                 return;
               }
+            } else {
+              const scRes = await getSessionScorecard(sessionId);
+              if (scRes.success && scRes.data) {
+                setIsCompleted(true);
+                setScorecard(scRes.data);
+                return;
+              }
             }
           } catch {}
         }
@@ -1276,21 +1337,48 @@ export default function InterviewRoom() {
       }
 
       const data = res.data;
-      if (data.is_session_completed) {
+      const isFinished = !!(data.is_session_completed || data.is_completed || data.session_status === 'completed');
+      const nextQ = data.next_question || data.active_question;
+
+      if (isFinished) {
         setIsCompleted(true);
         try {
           const scRes = await getSessionScorecard(sessionId);
           if (scRes.success && scRes.data) {
             setScorecard(scRes.data);
+          } else {
+            setTimeout(async () => {
+              try {
+                const retrySc = await getSessionScorecard(sessionId);
+                if (retrySc.success && retrySc.data) setScorecard(retrySc.data);
+              } catch {}
+            }, 1000);
           }
         } catch {}
-      } else if (data.next_question) {
-        advanceToNextQuestionData(data.next_question);
+      } else if (nextQ) {
+        advanceToNextQuestionData(nextQ);
+      } else {
+        try {
+          const curRes = await getCurrentQuestion(sessionId);
+          if (curRes.success && curRes.data) {
+            if (curRes.data.is_session_completed || curRes.data.session_status === 'completed') {
+              setIsCompleted(true);
+              const scRes = await getSessionScorecard(sessionId);
+              if (scRes.success && scRes.data) setScorecard(scRes.data);
+            } else {
+              advanceToNextQuestionData(curRes.data);
+            }
+          }
+        } catch {}
       }
     } catch (err) {
       if (currentSeq === submissionSeqRef.current) {
         setIsSkipping(false);
         setError(err.message || 'Error occurred while skipping question.');
+      }
+    } finally {
+      if (currentSeq === submissionSeqRef.current) {
+        setIsSkipping(false);
       }
     }
   };
@@ -1598,7 +1686,22 @@ export default function InterviewRoom() {
   // --------------------------------------------------------------------------
   // Completed Scorecard View
   // --------------------------------------------------------------------------
-  if (isCompleted && scorecard) {
+  if (isCompleted) {
+    if (!scorecard) {
+      return (
+        <div className="min-h-screen bg-[#070B14] text-slate-100 flex items-center justify-center p-4">
+          <div className="text-center space-y-4 max-w-md p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center mx-auto text-violet-400">
+              <Loader2 className="w-6 h-6 animate-spin" />
+            </div>
+            <h3 className="text-sm font-bold text-white">Interview Complete! Finalizing Scorecard...</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              All questions have been completed. Compiling your performance evaluation and generating your scorecard.
+            </p>
+          </div>
+        </div>
+      );
+    }
     const pct = scorecard.percentage_score || 0;
     const isPass = pct >= 60;
 
@@ -2507,6 +2610,29 @@ export default function InterviewRoom() {
                   {/* Candidate Technical Response Editor & Submit Action */}
                   {!lastEvaluation ? (
                     <div className="space-y-2 animate-in fade-in">
+                      {error && (
+                        <div
+                          id="interview-submission-error-banner"
+                          className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-200 text-xs flex items-start justify-between space-x-2 animate-in fade-in"
+                        >
+                          <div className="flex items-start space-x-2">
+                            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                            <div className="space-y-0.5">
+                              <p className="font-semibold text-rose-100">Submission Issue</p>
+                              <p className="text-slate-300 text-[11px] leading-relaxed">{error}</p>
+                              <p className="text-slate-400 text-[10px]">Your drafted response has been preserved. You can edit and retry submission.</p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setError(null)}
+                            className="text-slate-400 hover:text-slate-200 text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800/60 hover:bg-slate-800"
+                            title="Dismiss notification"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
                       <div className="flex items-center justify-between">
                         <label
                           htmlFor="interview-answer-editor"
@@ -2776,6 +2902,31 @@ export default function InterviewRoom() {
                   )}
                 </div>
               </div>
+
+              {/* Solution Submission Error Banner in Coding Sandbox */}
+              {error && (
+                <div
+                  id="interview-coding-submission-error-banner"
+                  className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-200 text-xs flex items-start justify-between space-x-2 animate-in fade-in"
+                >
+                  <div className="flex items-start space-x-2">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-semibold text-rose-100">Submission Issue</p>
+                      <p className="text-slate-300 text-[11px] leading-relaxed">{error}</p>
+                      <p className="text-slate-400 text-[10px]">Your solution code has been preserved. You can edit and retry submission.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    className="text-slate-400 hover:text-slate-200 text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800/60 hover:bg-slate-800"
+                    title="Dismiss notification"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
 
               {/* Solution Evaluation Feedback Drawer in Coding Sandbox */}
               {lastEvaluation && (

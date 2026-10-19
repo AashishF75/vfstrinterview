@@ -155,7 +155,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     NVIDIA_API_KEY: Optional[str] = None
     AI_MODEL_NAME: Optional[str] = None
-    GEMINI_DEFAULT_MODEL: str = "gemini-1.5-flash"
+    GEMINI_DEFAULT_MODEL: str = "gemini-3.5-flash-lite"
     GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
     NEMOTRON_DEFAULT_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b"
     NVIDIA_API_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
@@ -217,11 +217,11 @@ class Settings(BaseSettings):
     def resolved_gemini_model(self) -> str:
         """
         Resolves the configured Gemini model name with priority:
-        1. AI_MODEL_NAME (if set and non-empty)
-        2. GEMINI_DEFAULT_MODEL (defaults to 'gemini-1.5-flash')
+        1. AI_MODEL_NAME (if set and non-empty in environment or .env)
+        2. GEMINI_DEFAULT_MODEL (defaults to 'gemini-3.5-flash-lite')
         Safely strips any leading 'models/' prefix to avoid malformed API endpoint URLs.
         """
-        model = (self.AI_MODEL_NAME or self.GEMINI_DEFAULT_MODEL or "gemini-1.5-flash").strip()
+        model = (self.AI_MODEL_NAME or self.GEMINI_DEFAULT_MODEL or "gemini-3.5-flash-lite").strip()
         if model.startswith("models/"):
             model = model[len("models/"):]
         return model

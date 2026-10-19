@@ -597,23 +597,6 @@ class InterviewSessionService:
             )
 
         if session.get("session_status") != SessionStatus.IN_PROGRESS.value:
-            if session.get("session_status") == SessionStatus.COMPLETED.value:
-                existing_sc_call = db[SCORECARDS_COLLECTION].find_one({"session_id": session_id})
-                existing_scorecard = await existing_sc_call if hasattr(existing_sc_call, "__await__") else existing_sc_call
-                return SubmitAnswerResponse(
-                    session_id=session_id,
-                    question_index=session.get("current_question_index", 1),
-                    evaluated_score=existing_scorecard.get("overall_score", 0.0) if existing_scorecard else 0.0,
-                    feedback="Interview session is already completed.",
-                    strengths=[],
-                    improvements=[],
-                    next_difficulty=QuestionDifficulty(session.get("current_difficulty", "medium")),
-                    difficulty_rationale="Session already completed.",
-                    is_session_completed=True,
-                    is_skipped=False,
-                    next_question=None,
-                    scorecard_id=session.get("final_scorecard_id") or (existing_scorecard.get("scorecard_id") if existing_scorecard else None),
-                )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot submit answer: Session is already {session.get('session_status')}.",

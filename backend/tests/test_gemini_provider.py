@@ -1331,3 +1331,33 @@ async def test_gemini_200_schema_validation_error_records_failure_telemetry(capl
     assert '"total_tokens": 60' in failure_logs[0]
     success_logs = [r.message for r in caplog.records if '"outcome": "success"' in r.message]
     assert len(success_logs) == 0
+
+
+def test_gemini_model_resolution_priority_and_prefix_stripping():
+    """Verify Gemini model resolution respects AI_MODEL_NAME override, defaults to verified model, and strips models/ prefix."""
+    # 1. Default when neither AI_MODEL_NAME nor custom default set
+    with patch.object(settings, "AI_MODEL_NAME", None):
+        with patch.object(settings, "GEMINI_DEFAULT_MODEL", "gemini-3.5-flash-lite"):
+            assert settings.resolved_gemini_model == "gemini-3.5-flash-lite"
+
+    # 2. GEMINI_DEFAULT_MODEL override
+    with patch.object(settings, "AI_MODEL_NAME", None):
+        with patch.object(settings, "GEMINI_DEFAULT_MODEL", "gemini-3.8-flash"):
+            assert settings.resolved_gemini_model == "gemini-3.8-flash"
+
+    # 3. AI_MODEL_NAME has higher priority than GEMINI_DEFAULT_MODEL
+    with patch.object(settings, "AI_MODEL_NAME", "custom-gemini-model"):
+        with patch.object(settings, "GEMINI_DEFAULT_MODEL", "gemini-3.5-flash-lite"):
+            assert settings.resolved_gemini_model == "custom-gemini-model"
+
+    # 4. Leading 'models/' prefix is safely stripped to prevent duplicate URL segments
+    with patch.object(settings, "AI_MODEL_NAME", "models/gemini-3.5-flash-lite"):
+        assert settings.resolved_gemini_model == "gemini-3.5-flash-lite"
+
+    # 5. Verify factory injects resolved model into provider
+    with patch.object(settings, "AI_PROVIDER", "gemini"):
+        with patch.object(settings, "GEMINI_API_KEY", "test-key-mock-123"):
+            with patch.object(settings, "AI_MODEL_NAME", "gemini-3.5-flash-lite"):
+                provider = get_ai_provider()
+                assert isinstance(provider, GeminiInterviewAIProvider)
+                assert provider.model_name == "gemini-3.5-flash-lite"
