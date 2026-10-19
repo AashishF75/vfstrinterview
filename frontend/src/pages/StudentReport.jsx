@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { getStudentPerformanceReport, getSessionPerformanceReport } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import EmbeddedVideoPlayer from '../components/EmbeddedVideoPlayer';
 
 export default function StudentReport() {
   const { assignmentId } = useParams();
@@ -593,11 +594,11 @@ export default function StudentReport() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {report.video_recommendations && report.video_recommendations.length > 0 ? (
               report.video_recommendations.map((vid, idx) => (
                 <div
-                  key={idx}
+                  key={vid.resource_id || idx}
                   className="p-5 rounded-2xl bg-slate-900/70 border border-slate-800/90 hover:border-indigo-500/40 transition flex flex-col justify-between space-y-4 group shadow-sm"
                 >
                   <div className="space-y-3">
@@ -625,21 +626,35 @@ export default function StudentReport() {
                       <strong className="text-amber-300 block mb-0.5">Why this was recommended for you:</strong>
                       {vid.reason}
                     </div>
+
+                    {/* In-Site Video Player Embed */}
+                    <div className="pt-1">
+                      <EmbeddedVideoPlayer
+                        videoUrl={vid.video_url}
+                        embedUrl={vid.embed_url}
+                        videoId={vid.video_id}
+                        title={vid.title}
+                        provider={vid.provider}
+                        topic={vid.topic}
+                        canEmbed={vid.can_embed !== false}
+                      />
+                    </div>
                   </div>
 
-                  <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
-                    <span className="text-[11px] text-slate-500 font-mono">
-                      Status: <strong className="text-slate-400 font-normal">Not Viewed (Recommended)</strong>
+                  <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                    <span className="text-slate-500 font-mono">
+                      Status: <strong className="text-slate-400 font-normal">Personalized Recommendation</strong>
                     </span>
 
                     <a
                       href={vid.video_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow shadow-indigo-600/20 print:hidden"
+                      className="text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 font-medium transition print:hidden"
+                      title="Open tutorial on YouTube"
                     >
-                      <span>Watch Tutorial</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>External Link</span>
+                      <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
                 </div>

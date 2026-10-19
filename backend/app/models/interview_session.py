@@ -255,6 +255,9 @@ class VideoRecommendationItem(BaseModel):
     provider: str
     topic: str
     video_url: str
+    embed_url: Optional[str] = None
+    video_id: Optional[str] = None
+    can_embed: bool = True
     difficulty_level: str
     reason: str
     watched: bool = False

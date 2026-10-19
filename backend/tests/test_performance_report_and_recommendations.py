@@ -16,7 +16,12 @@ from app.models.interview_session import (
     StudentPerformanceReportResponse,
 )
 from app.services.interview_session_service import InterviewSessionService
-from app.services.learning_resources import match_video_recommendations, VERIFIED_LEARNING_RESOURCES
+from app.services.learning_resources import (
+    match_video_recommendations,
+    VERIFIED_LEARNING_RESOURCES,
+    extract_youtube_video_id,
+    build_youtube_embed_url,
+)
 
 
 def make_user(uid: str, email: str, role: UserRole, reg_no: str = None) -> UserInDB:
@@ -377,7 +382,8 @@ async def test_report_unavailable_for_in_progress_session():
 def test_verified_catalog_integrity():
     """
     Verifies that the static educational resource catalog contains verified entries,
-    valid URLs starting with https://www.youtube.com/watch?v=, and required metadata.
+    valid URLs starting with https://www.youtube.com/watch?v=, valid 11-char video IDs,
+    privacy-enhanced embed URLs, and required metadata.
     """
     assert len(VERIFIED_LEARNING_RESOURCES) == 10
     for res in VERIFIED_LEARNING_RESOURCES:
@@ -387,6 +393,9 @@ def test_verified_catalog_integrity():
         assert len(res["title"]) > 10
         assert len(res["provider"]) > 2
         assert len(res["role_tags"]) >= 1
+        assert "video_id" in res and len(res["video_id"]) == 11
+        assert "embed_url" in res and res["embed_url"].startswith("https://www.youtube-nocookie.com/embed/")
+        assert res["can_embed"] is True
 
 
 def test_match_video_recommendations_celebratory_enrichment_for_high_scores():
@@ -800,3 +809,422 @@ async def test_topic_acronym_preservation_and_grouping():
     # "qa" MUST be formatted as "QA"
     assert "QA" in topic_map
     assert "Qa" not in topic_map
+
+
+def test_video_recommendations_skipped_question_handling():
+    """
+    Phase 4 test:
+    Verifies that when a question is skipped or unanswered:
+    - An introductory tutorial is matched for that question's topic.
+    - No fabricated score (e.g. 0.0) is assigned or cited in the reasoning.
+    - The reason clearly explains that Question N on the topic was skipped.
+    - Embed URL and YouTube video ID are properly attached.
+    """
+    responses = [
+        {
+            "response_id": "r1",
+            "question_index": 1,
+            "topic": "Data Structures",
+            "evaluation_score": 7.5,
+            "answer_text": "A binary heap is a complete binary tree...",
+            "is_skipped": False,
+            "status": "evaluated",
+        },
+        {
+            "response_id": "r2",
+            "question_index": 2,
+            "topic": "Operating Systems",
+            "evaluation_score": None,
+            "answer_text": "",
+            "is_skipped": True,
+            "status": "skipped",
+        },
+    ]
+    topic_breakdown = [
+        {"topic": "Data Structures", "average_score": 7.5, "questions_tested": 1},
+    ]
+
+    recs = match_video_recommendations(
+        topic_breakdown=topic_breakdown,
+        selected_role="Software Development Engineer",
+        responses=responses,
+        max_recommendations=3,
+    )
+
+    os_recs = [r for r in recs if r["topic"] == "Operating Systems"]
+    assert len(os_recs) >= 1
+    os_rec = os_recs[0]
+    assert "Question 2" in os_rec["reason"]
+    assert "Operating Systems" in os_rec["reason"]
+    assert "skipped" in os_rec["reason"]
+    assert "introductory tutorial" in os_rec["reason"]
+    assert "0.0" not in os_rec["reason"]
+    assert os_rec["video_id"] == "mXw9ruZaxzQ"
+    assert os_rec["embed_url"] == "https://www.youtube-nocookie.com/embed/mXw9ruZaxzQ?rel=0&modestbranding=1"
+    assert os_rec["can_embed"] is True
+
+
+def test_video_recommendations_insufficient_evidence_qualification():
+    """
+    Phase 4 test:
+    Verifies that single-question topics qualify their recommendation reason
+    with a note about the limited sample size to avoid over-generalizing.
+    Multi-question topics cite the exact question count.
+    """
+    responses = [
+        {
+            "response_id": "r1",
+            "question_index": 1,
+            "topic": "Computer Networks",
+            "evaluation_score": 4.0,
+            "answer_text": "TCP is connection oriented.",
+            "is_skipped": False,
+            "status": "evaluated",
+        },
+        {
+            "response_id": "r2",
+            "question_index": 2,
+            "topic": "Operating Systems",
+            "evaluation_score": 5.0,
+            "answer_text": "Deadlock is when processes wait.",
+            "is_skipped": False,
+            "status": "evaluated",
+        },
+        {
+            "response_id": "r3",
+            "question_index": 3,
+            "topic": "Operating Systems",
+            "evaluation_score": 5.5,
+            "answer_text": "Virtual memory uses paging.",
+            "is_skipped": False,
+            "status": "evaluated",
+        },
+    ]
+    topic_breakdown = [
+        {"topic": "Computer Networks", "average_score": 4.0, "questions_tested": 1},
+        {"topic": "Operating Systems", "average_score": 5.25, "questions_tested": 2},
+    ]
+
+    recs = match_video_recommendations(
+        topic_breakdown=topic_breakdown,
+        selected_role="Software Development Engineer",
+        responses=responses,
+        max_recommendations=3,
+    )
+
+    # 1. Computer Networks (single question sample)
+    net_recs = [r for r in recs if r["topic"] == "Computer Networks"]
+    assert len(net_recs) == 1
+    assert "single question sample" in net_recs[0]["reason"]
+    assert "Question 1" in net_recs[0]["reason"]
+    assert "4.0/10" in net_recs[0]["reason"]
+
+    # 2. Operating Systems (two question sample)
+    os_recs = [r for r in recs if r["topic"] == "Operating Systems"]
+    assert len(os_recs) == 1
+    assert "across 2 question(s)" in os_recs[0]["reason"]
+    assert "Question 2, Question 3" in os_recs[0]["reason"]
+
+
+def test_video_recommendations_strong_performance_celebration():
+    """
+    Phase 4 test:
+    Verifies that when a student achieves high scores (all >= 7.0) with zero skipped questions,
+    the system presents celebratory advanced enrichment rather than manufacturing deficiencies.
+    """
+    responses = [
+        {
+            "response_id": "r1",
+            "question_index": 1,
+            "topic": "Data Structures",
+            "evaluation_score": 8.5,
+            "is_skipped": False,
+            "status": "evaluated",
+        },
+        {
+            "response_id": "r2",
+            "question_index": 2,
+            "topic": "Algorithms",
+            "evaluation_score": 9.0,
+            "is_skipped": False,
+            "status": "evaluated",
+        },
+    ]
+    topic_breakdown = [
+        {"topic": "Data Structures", "average_score": 8.5, "questions_tested": 1},
+        {"topic": "Algorithms", "average_score": 9.0, "questions_tested": 1},
+    ]
+
+    recs = match_video_recommendations(
+        topic_breakdown=topic_breakdown,
+        selected_role="Software Development Engineer",
+        responses=responses,
+        max_recommendations=3,
+    )
+
+    assert len(recs) == 3
+    assert any("Excellent performance!" in r["reason"] for r in recs)
+    for r in recs:
+        assert r["can_embed"] is True
+        assert r["embed_url"].startswith("https://www.youtube-nocookie.com/embed/")
+        assert len(r["video_id"]) == 11
+
+
+def test_video_recommendations_unmatched_topic_fallback():
+    """
+    Phase 4 test:
+    Verifies that when a topic does not match any curated resource (e.g. niche or custom topic),
+    the recommendation engine falls back to role-aligned resources without error or empty results.
+    """
+    responses = [
+        {
+            "response_id": "r1",
+            "question_index": 1,
+            "topic": "Quantum Computing & Cryptography",
+            "evaluation_score": 3.0,
+            "is_skipped": False,
+            "status": "evaluated",
+        }
+    ]
+    topic_breakdown = [
+        {"topic": "Quantum Computing & Cryptography", "average_score": 3.0, "questions_tested": 1}
+    ]
+
+    recs = match_video_recommendations(
+        topic_breakdown=topic_breakdown,
+        selected_role="Software Development Engineer",
+        responses=responses,
+        max_recommendations=2,
+    )
+
+    assert len(recs) == 2
+    for r in recs:
+        assert r["is_verified"] is True
+        assert r["can_embed"] is True
+        assert r["video_id"] is not None
+
+
+def test_safe_youtube_id_extraction_and_embed_url():
+    """
+    Phase 4 test:
+    Verifies that YouTube video ID extraction and embed URL generation:
+    - Correctly parses standard watch URLs, short youtu.be URLs, and embed URLs.
+    - Strictly rejects non-YouTube URLs, invalid IDs, script injections, and malformed inputs.
+    - Constructs privacy-enhanced, nocookie embed URLs with rel=0 and modestbranding=1.
+    """
+    # 1. Standard watch URL
+    assert extract_youtube_video_id("https://www.youtube.com/watch?v=IPvYjXCsTg8") == "IPvYjXCsTg8"
+    assert extract_youtube_video_id("https://www.youtube.com/watch?v=IPvYjXCsTg8&t=120s") == "IPvYjXCsTg8"
+
+    # 2. youtu.be short URL
+    assert extract_youtube_video_id("https://youtu.be/IPvYjXCsTg8") == "IPvYjXCsTg8"
+
+    # 3. Existing embed URL
+    assert extract_youtube_video_id("https://www.youtube.com/embed/IPvYjXCsTg8") == "IPvYjXCsTg8"
+    assert extract_youtube_video_id("https://www.youtube-nocookie.com/embed/IPvYjXCsTg8") == "IPvYjXCsTg8"
+
+    # 4. Plain valid 11-char ID
+    assert extract_youtube_video_id("https://www.youtube.com/watch?v=8hly31xKli0") == "8hly31xKli0"
+
+    # 5. Invalid / Malicious / Injected URLs
+    assert extract_youtube_video_id(None) is None
+    assert extract_youtube_video_id("") is None
+    assert extract_youtube_video_id("not-a-url") is None
+    assert extract_youtube_video_id("https://evil.example.com/watch?v=IPvYjXCsTg8") is None
+    assert extract_youtube_video_id("<script>alert(1)</script>") is None
+    assert extract_youtube_video_id("https://www.youtube.com/watch?v=short") is None
+    assert extract_youtube_video_id("https://www.youtube.com/watch?v=toolongvideoid12345") is None
+
+    # 6. Embed URL constructor
+    embed = build_youtube_embed_url("https://www.youtube.com/watch?v=IPvYjXCsTg8")
+    assert embed == "https://www.youtube-nocookie.com/embed/IPvYjXCsTg8?rel=0&modestbranding=1"
+
+    # Direct 11-char ID
+    embed_direct = build_youtube_embed_url("IPvYjXCsTg8")
+    assert embed_direct == "https://www.youtube-nocookie.com/embed/IPvYjXCsTg8?rel=0&modestbranding=1"
+
+    # Invalid input returns None
+    assert build_youtube_embed_url(None) is None
+    assert build_youtube_embed_url("") is None
+    assert build_youtube_embed_url("malicious_id_too_long_or_with_invalid_characters!!!") is None
+
+
+def test_boundary_scores_and_high_performance_safeguards():
+    """
+    Hardening test:
+    Verifies behavior at score boundaries:
+    - 6.49 triggers weak-topic revision (< 6.5)
+    - 6.5 does NOT trigger weak-topic revision (< 6.5) and does NOT trigger high-performance (>= 7.0)
+    - 6.99 does NOT trigger high-performance enrichment
+    - 7.0 triggers high-performance enrichment when all evaluated questions >= 7.0 and zero skipped
+    - Incomplete assessment (None evaluation score) or skipped question NEVER triggers high performance
+    """
+    # 1. Score 6.49: Triggers Pass 2 (Weak evaluated topic)
+    recs_649 = match_video_recommendations(
+        topic_breakdown=[{"topic": "Data Structures", "average_score": 6.49, "questions_tested": 1}],
+        selected_role="Software Development Engineer",
+        responses=[{"question_index": 1, "topic": "Data Structures", "evaluation_score": 6.49}],
+        max_recommendations=2,
+    )
+    assert len(recs_649) >= 1
+    assert "revision" in recs_649[0]["reason"].lower()
+    assert "6.49" in recs_649[0]["reason"]
+
+    # 2. Score 6.5: Does NOT trigger weak topic (< 6.5)
+    recs_65 = match_video_recommendations(
+        topic_breakdown=[{"topic": "Data Structures", "average_score": 6.5, "questions_tested": 1}],
+        selected_role="Software Development Engineer",
+        responses=[{"question_index": 1, "topic": "Data Structures", "evaluation_score": 6.5}],
+        max_recommendations=2,
+    )
+    assert len(recs_65) >= 1
+    assert "6.5" not in recs_65[0]["reason"]
+    assert "Excellent performance!" not in recs_65[0]["reason"]
+
+    # 3. Score 6.99: Below 7.0, does NOT trigger celebratory enrichment
+    recs_699 = match_video_recommendations(
+        topic_breakdown=[{"topic": "Data Structures", "average_score": 6.99, "questions_tested": 1}],
+        selected_role="Software Development Engineer",
+        responses=[{"question_index": 1, "topic": "Data Structures", "evaluation_score": 6.99}],
+        max_recommendations=2,
+    )
+    assert len(recs_699) >= 1
+    assert not any("Excellent performance!" in r["reason"] for r in recs_699)
+
+    # 4. Score 7.0: Exactly at threshold, triggers celebratory enrichment
+    recs_70 = match_video_recommendations(
+        topic_breakdown=[{"topic": "Data Structures", "average_score": 7.0, "questions_tested": 1}],
+        selected_role="Software Development Engineer",
+        responses=[{"question_index": 1, "topic": "Data Structures", "evaluation_score": 7.0}],
+        max_recommendations=2,
+    )
+    assert len(recs_70) >= 1
+    assert any("Excellent performance!" in r["reason"] for r in recs_70)
+
+    # 5. Incomplete assessment safeguard: 1 response has score 9.0, but 1 response has evaluation_score = None
+    # Must NEVER trigger high performance!
+    recs_incomplete = match_video_recommendations(
+        topic_breakdown=[
+            {"topic": "Data Structures", "average_score": 9.0, "questions_tested": 1},
+            {"topic": "Algorithms", "average_score": 7.0, "questions_tested": 1},
+        ],
+        selected_role="Software Development Engineer",
+        responses=[
+            {"question_index": 1, "topic": "Data Structures", "evaluation_score": 9.0, "answer_text": "AVL trees"},
+            {"question_index": 2, "topic": "Algorithms", "evaluation_score": None, "answer_text": "Draft answer in progress"},
+        ],
+        max_recommendations=2,
+    )
+    assert not any("Excellent performance!" in r["reason"] for r in recs_incomplete)
+
+    # 6. Skipped question safeguard: 1 response has score 10.0, but question 2 was skipped
+    # Must NEVER trigger high performance!
+    recs_skipped = match_video_recommendations(
+        topic_breakdown=[{"topic": "Data Structures", "average_score": 10.0, "questions_tested": 1}],
+        selected_role="Software Development Engineer",
+        responses=[
+            {"question_index": 1, "topic": "Data Structures", "evaluation_score": 10.0},
+            {"question_index": 2, "topic": "Operating Systems", "is_skipped": True},
+        ],
+        max_recommendations=2,
+    )
+    assert not any("Excellent performance!" in r["reason"] for r in recs_skipped)
+
+
+def test_unanswered_topic_zero_score_fabrication_prevention():
+    """
+    Hardening test:
+    When a student skips all questions in a topic and the topic average is recorded as 0.0,
+    the recommendation system must NEVER fabricate a statement claiming the candidate scored 0.0/10.
+    """
+    responses = [
+        {
+            "question_index": 1,
+            "topic": "Operating Systems",
+            "is_skipped": True,
+            "answer_text": "",
+            "evaluation_score": None,
+        }
+    ]
+    # Topic breakdown indicates 0.0 average score
+    topic_breakdown = [
+        {
+            "topic": "Operating Systems",
+            "average_score": 0.0,
+            "questions_tested": 1,
+            "is_limited_evidence": True,
+        }
+    ]
+
+    recs = match_video_recommendations(
+        topic_breakdown=topic_breakdown,
+        selected_role="System Engineer",
+        responses=responses,
+        max_recommendations=2,
+    )
+
+    assert len(recs) >= 1
+    os_rec = recs[0]
+    assert "0.0/10" not in os_rec["reason"]
+    assert "0.0" not in os_rec["reason"]
+    assert "Operating Systems" in os_rec["reason"]
+
+
+def test_strict_url_security_against_credentials_ports_and_deceptive_hosts():
+    """
+    Hardening test:
+    Verifies that extract_youtube_video_id and build_youtube_embed_url reject:
+    - Embedded username/password credentials (e.g. https://user:pass@youtube.com/...)
+    - Unexpected ports (e.g. https://youtube.com:8443/...)
+    - Deceptive subdomains / suffixes (e.g. https://youtube.com.evil.com/...)
+    - Non-http/https protocols (javascript:, ftp:, data:)
+    - PII or secret query parameters are stripped from embed URLs
+    """
+    # Deceptive domains
+    assert extract_youtube_video_id("https://youtube.com.evil.com/watch?v=IPvYjXCsTg8") is None
+    assert extract_youtube_video_id("https://www.youtube.com.attacker.org/embed/IPvYjXCsTg8") is None
+
+    # Embedded credentials
+    assert extract_youtube_video_id("https://user:password@www.youtube.com/watch?v=IPvYjXCsTg8") is None
+
+    # Unexpected ports
+    assert extract_youtube_video_id("https://www.youtube.com:8080/watch?v=IPvYjXCsTg8") is None
+    assert extract_youtube_video_id("https://www.youtube.com:4444/watch?v=IPvYjXCsTg8") is None
+
+    # Dangerous protocols
+    assert extract_youtube_video_id("javascript:alert('xss')") is None
+    assert extract_youtube_video_id("data:text/html,<script>alert(1)</script>") is None
+    assert extract_youtube_video_id("ftp://www.youtube.com/watch?v=IPvYjXCsTg8") is None
+
+    # Embed URL generation strips tokens and PII completely
+    dirty_url = "https://www.youtube.com/watch?v=IPvYjXCsTg8&token=secret_jwt_bearer&student_id=241FA04001"
+    embed_url = build_youtube_embed_url(dirty_url)
+    assert embed_url == "https://www.youtube-nocookie.com/embed/IPvYjXCsTg8?rel=0&modestbranding=1"
+    assert "token" not in embed_url
+    assert "student_id" not in embed_url
+    assert "241FA04001" not in embed_url
+
+
+def test_acronym_matching_collision_protection():
+    """
+    Hardening test:
+    Verifies that short technical acronyms like 'OS' do not collide with unrelated topics
+    such as 'Microservices' in System Design, and that 'SQL' and 'TCP/IP' match accurately.
+    """
+    from app.services.learning_resources import _matches_topic, VERIFIED_LEARNING_RESOURCES
+
+    os_resource = next(r for r in VERIFIED_LEARNING_RESOURCES if r["resource_id"] == "res-os-fundamentals-01")
+    sys_design_resource = next(r for r in VERIFIED_LEARNING_RESOURCES if r["resource_id"] == "res-sys-design-01")
+
+    # "OS" must match Operating Systems
+    assert _matches_topic(os_resource, "OS") is True
+    assert _matches_topic(os_resource, "os") is True
+
+    # "OS" must NOT match System Design (even though System Design has "Microservices")
+    assert _matches_topic(sys_design_resource, "OS") is False
+    assert _matches_topic(sys_design_resource, "os") is False
+
+    # "SQL" matches Database
+    db_resource = next(r for r in VERIFIED_LEARNING_RESOURCES if r["resource_id"] == "res-db-sql-01")
+    assert _matches_topic(db_resource, "SQL") is True
+    assert _matches_topic(db_resource, "sql") is True
