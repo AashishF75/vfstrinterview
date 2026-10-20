@@ -312,6 +312,19 @@ export default function AdminConsole() {
             <span>Student Performance & Level Tracking</span>
           </button>
 
+          <button
+            id="admin-tab-proctoring"
+            onClick={() => setAdminTab('proctoring')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-2 ${
+              adminTab === 'proctoring'
+                ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-[0_0_15px_rgba(168,85,247,0.2)]'
+                : 'bg-slate-900/60 text-slate-400 hover:text-slate-200 border border-slate-800 hover:border-slate-700'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-purple-400" />
+            <span>Proctoring & Integrity Review</span>
+          </button>
+
           {(user?.role === 'platform_admin' || user?.role === 'university_admin' || user?.role === 'department_admin') && (
             <button
               onClick={() => setAdminTab('interviews')}
@@ -329,6 +342,61 @@ export default function AdminConsole() {
 
         {adminTab === 'tracking' ? (
           <FacultyStudentTracking user={user} />
+        ) : adminTab === 'proctoring' ? (
+          <div className="p-6 rounded-2xl glass-panel border border-slate-800 mb-8 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                  <ShieldCheck className="w-5 h-5 text-purple-400" />
+                  <span>Level 1 Proctoring & Integrity Telemetry Inspector</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Lookup any interview session UUID to inspect chronological event sequences, tab changes, face presence, stream interruptions, and record faculty review decisions.
+                </p>
+              </div>
+              <span className="text-[10px] font-mono uppercase px-2.5 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 self-start sm:self-auto">
+                Human-in-the-loop Evaluation
+              </span>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (lookupSessionIdInput.trim()) {
+                  setSelectedTimelineSessionId(lookupSessionIdInput.trim());
+                }
+              }}
+              className="flex flex-col sm:flex-row items-center gap-3"
+            >
+              <div className="relative flex-1 w-full">
+                <input
+                  type="text"
+                  placeholder="Enter Session UUID (e.g., 550e8400-e29b-41d4-a716-446655440000)..."
+                  value={lookupSessionIdInput}
+                  onChange={(e) => setLookupSessionIdInput(e.target.value)}
+                  className="w-full rounded-xl bg-slate-950/80 border border-slate-800 focus:border-purple-500 text-slate-100 placeholder-slate-600 text-xs font-mono px-3.5 py-2.5 transition"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={!lookupSessionIdInput.trim()}
+                className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-medium text-xs transition disabled:opacity-50 shrink-0 flex items-center space-x-1.5 shadow-md shadow-purple-600/20"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>Open Proctoring Timeline</span>
+              </button>
+            </form>
+
+            <div className="p-4 rounded-xl bg-slate-950/50 border border-slate-800 text-xs text-slate-400 space-y-1.5">
+              <span className="font-semibold text-slate-300 block">Review Guidelines & Boundaries:</span>
+              <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-400">
+                <li>Proctoring signals are non-disqualifying indicators collected for human evaluator discretion.</li>
+                <li>Faculty and department administrators may only review sessions within their authorized institutional department scope.</li>
+                <li>Review outcomes (<code>cleared</code>, <code>flagged</code>) and notes are permanently logged with your reviewer identity for audit compliance.</li>
+              </ul>
+            </div>
+          </div>
         ) : (
           <>
             {/* Interviews List Section */}

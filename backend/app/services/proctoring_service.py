@@ -1,7 +1,8 @@
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 PROCTORING_COLLECTION = "proctoring_events"
 SESSIONS_COLLECTION = "interview_sessions"
 ASSIGNMENTS_COLLECTION = "student_interview_assignments"
+INTERVIEWS_COLLECTION = "interviews"
+STUDENTS_COLLECTION = "students"
 
 
 async def _safe_find_one(col: Any, query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -78,6 +81,39 @@ def _format_event_description(event_type: ProctoringEventType, duration: Optiona
         ProctoringEventType.WINDOW_FOCUS: "Interview window regained focus.",
     }
     return descriptions.get(event_type, f"Telemetry event: {event_type.value}{dur_str}")
+
+
+VFSTR_BRANCH_CODES = {
+    "04": "CSE",
+    "05": "ECE",
+    "07": "IT",
+    "02": "EEE",
+    "01": "BT",
+    "03": "MECH",
+    "08": "CIVIL",
+    "06": "ECM",
+    "10": "AIDS",
+    "11": "CSBS",
+}
+
+
+def _infer_vfstr_roll_scope(reg_no: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Infers institutional and department scope for canonical VFSTR registration formats:
+    e.g. '241FA04001' -> ('VFSTR', 'CSE')
+    e.g. '251LA04010' -> ('VFSTR', 'CSE')
+    Returns (None, None) if the pattern does not match canonical VFSTR format.
+    """
+    if not reg_no:
+        return None, None
+    clean = reg_no.strip().upper()
+    m = re.match(r"^\d{2}[12][FfLl][Aa](\d{2})[0-9A-Za-z]{3}$", clean)
+    if m:
+        code = m.group(1)
+        dept = VFSTR_BRANCH_CODES.get(code)
+        if dept:
+            return "VFSTR", dept
+    return None, None
 
 
 class ProctoringService:
@@ -154,6 +190,143 @@ class ProctoringService:
         )
 
     @staticmethod
+    async def _verify_reviewer_tenant_access(
+        db: AsyncIOMotorDatabase,
+        session: Dict[str, Any],
+        reviewer: UserInDB,
+    ) -> None:
+        """
+        Enforces fail-closed institutional tenant boundaries and department scoping:
+        - platform_admin: cross-tenant access allowed by policy.
+        - university_admin: requires verified matching institution. Denies if scope cannot be verified.
+        - department_admin & faculty: requires verified matching institution AND matching department.
+          Denies if scope cannot be established.
+        - students & unverified accounts: rejected.
+        """
+        if reviewer.role == UserRole.PLATFORM_ADMIN:
+            return
+
+        if reviewer.role not in [
+            UserRole.UNIVERSITY_ADMIN,
+            UserRole.DEPARTMENT_ADMIN,
+            UserRole.FACULTY,
+        ]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions for proctoring review",
+            )
+
+        # 1. Resolve candidate tenant and department scope
+        target_inst = session.get("institution_id")
+        target_dept = session.get("department")
+
+        # Resolve from assignment if missing
+        if not target_inst or not target_dept:
+            asgn_id = session.get("assignment_id")
+            if asgn_id:
+                try:
+                    assignment = await _safe_find_one(db[ASSIGNMENTS_COLLECTION], {"assignment_id": asgn_id})
+                    if isinstance(assignment, dict):
+                        if not target_inst and assignment.get("institution_id"):
+                            target_inst = assignment.get("institution_id")
+                        if not target_dept and assignment.get("department"):
+                            target_dept = assignment.get("department")
+                except Exception:
+                    pass
+
+        # Resolve from interview definition if missing
+        if not target_inst or not target_dept:
+            int_id = session.get("interview_id")
+            if int_id:
+                try:
+                    interview = await _safe_find_one(db[INTERVIEWS_COLLECTION], {"interview_id": int_id})
+                    if isinstance(interview, dict):
+                        if not target_inst and interview.get("institution_id"):
+                            target_inst = interview.get("institution_id")
+                        if not target_dept and (interview.get("target_department") or interview.get("department")):
+                            target_dept = interview.get("target_department") or interview.get("department")
+                except Exception:
+                    pass
+
+        # Resolve from students collection if missing
+        clean_reg = session.get("student_registration_number")
+        if (not target_inst or not target_dept) and clean_reg:
+            try:
+                student_doc = await _safe_find_one(db[STUDENTS_COLLECTION], {"registration_number": clean_reg})
+                if isinstance(student_doc, dict):
+                    if not target_inst and student_doc.get("institution_id"):
+                        target_inst = student_doc.get("institution_id")
+                    if not target_dept and student_doc.get("department"):
+                        target_dept = student_doc.get("department")
+            except Exception:
+                pass
+
+        # Resolve from auth users collection if still missing
+        if (not target_inst or not target_dept) and clean_reg and hasattr(db, "client") and db.client:
+            from app.core.config import settings
+            if settings.MONGODB_DB_NAME in db.client:
+                try:
+                    auth_db = db.client[settings.MONGODB_DB_NAME]
+                    user_doc = await _safe_find_one(auth_db["users"], {"registration_number": clean_reg})
+                    if isinstance(user_doc, dict):
+                        if not target_inst and user_doc.get("institution_id"):
+                            target_inst = user_doc.get("institution_id")
+                        if not target_dept and user_doc.get("department"):
+                            target_dept = user_doc.get("department")
+                except Exception:
+                    pass
+
+        # Resolve from canonical VFSTR registration number if still missing
+        if (not target_inst or not target_dept) and clean_reg:
+            inferred_inst, inferred_dept = _infer_vfstr_roll_scope(clean_reg)
+            if not target_inst and inferred_inst:
+                target_inst = inferred_inst
+            if not target_dept and inferred_dept:
+                target_dept = inferred_dept
+
+        # 2. FAIL-CLOSED Institution Check
+        reviewer_inst = (reviewer.institution_id or "").strip().upper()
+        if not reviewer_inst:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Reviewer institutional identity could not be verified.",
+            )
+
+        clean_target_inst = (target_inst or "").strip().upper()
+        if not clean_target_inst:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cannot establish verified institutional scope for this session.",
+            )
+
+        if reviewer_inst != clean_target_inst:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cross-institution access is strictly prohibited.",
+            )
+
+        # 3. FAIL-CLOSED Department Check for department_admin and faculty
+        if reviewer.role in [UserRole.DEPARTMENT_ADMIN, UserRole.FACULTY]:
+            clean_target_dept = (target_dept or "").strip().lower()
+            if not clean_target_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: Cannot establish verified department scope for this session.",
+                )
+
+            reviewer_dept = (reviewer.department or "").strip().lower()
+            if reviewer.role == UserRole.DEPARTMENT_ADMIN and not reviewer_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: Reviewer department identity could not be verified.",
+                )
+            if reviewer_dept and reviewer_dept != clean_target_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: Student belongs to another department.",
+                )
+
+    @staticmethod
     async def get_session_timeline(
         db: AsyncIOMotorDatabase,
         session_id: str,
@@ -162,7 +335,7 @@ class ProctoringService:
         """
         Retrieves proctoring event timeline and summary metrics:
         - Students can access only their own session.
-        - Faculty and administrators can inspect any session.
+        - Faculty and administrators can inspect sessions within institutional/department scope.
         - Computes summary metrics (tab hidden duration, face absence, stream drops).
         """
         session = await _safe_find_one(db[SESSIONS_COLLECTION], {"session_id": session_id})
@@ -172,12 +345,15 @@ class ProctoringService:
                 detail=f"Interview session '{session_id}' not found",
             )
 
-        clean_reg = (current_user.registration_number or "").strip().upper()
-        if current_user.role == UserRole.STUDENT and session.get("student_registration_number") != clean_reg:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: You cannot view proctoring records for another candidate",
-            )
+        if current_user.role == UserRole.STUDENT:
+            clean_reg = (current_user.registration_number or "").strip().upper()
+            if not clean_reg or session.get("student_registration_number") != clean_reg:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You cannot view proctoring records for another candidate",
+                )
+        else:
+            await ProctoringService._verify_reviewer_tenant_access(db, session, current_user)
 
         # Fetch events ordered by server_timestamp ascending
         cursor = db[PROCTORING_COLLECTION].find(
@@ -254,6 +430,8 @@ class ProctoringService:
 
         review_status = session.get("proctoring_review_status", ProctoringReviewStatus.UNREVIEWED.value)
         review_notes = session.get("proctoring_review_notes")
+        reviewed_at = session.get("proctoring_reviewed_at")
+        reviewed_by_email = session.get("proctoring_reviewed_by_email")
 
         return ProctoringTimelineResponse(
             session_id=session_id,
@@ -263,6 +441,8 @@ class ProctoringService:
             timeline=timeline_items,
             review_status=ProctoringReviewStatus(review_status),
             review_notes=review_notes,
+            reviewed_at=reviewed_at,
+            reviewed_by_email=reviewed_by_email,
         )
 
     @staticmethod
@@ -276,7 +456,26 @@ class ProctoringService:
         """
         Updates administrative review status and notes for a session:
         - Strict RBAC: only university_admin, platform_admin, department_admin, or faculty.
+        - Enforces multi-tenant institutional and department isolation boundaries.
+        - Validates review notes length (max 2000 chars).
         """
+        if admin_user.role not in [
+            UserRole.PLATFORM_ADMIN,
+            UserRole.UNIVERSITY_ADMIN,
+            UserRole.DEPARTMENT_ADMIN,
+            UserRole.FACULTY,
+        ]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions to update proctoring review status",
+            )
+
+        if review_notes and len(review_notes.strip()) > 2000:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Review notes must not exceed 2000 characters",
+            )
+
         session = await _safe_find_one(db[SESSIONS_COLLECTION], {"session_id": session_id})
         if not session:
             raise HTTPException(
@@ -284,10 +483,13 @@ class ProctoringService:
                 detail=f"Interview session '{session_id}' not found",
             )
 
+        await ProctoringService._verify_reviewer_tenant_access(db, session, admin_user)
+
         now = utc_now()
-        update_fields = {
+        update_fields: Dict[str, Any] = {
             "proctoring_review_status": review_status.value,
             "proctoring_reviewed_by_admin_id": str(admin_user.id),
+            "proctoring_reviewed_by_email": admin_user.email,
             "proctoring_reviewed_at": now,
             "updated_at": now,
         }
@@ -305,5 +507,6 @@ class ProctoringService:
             "session_id": session_id,
             "review_status": review_status.value,
             "reviewed_by_admin_id": str(admin_user.id),
+            "reviewed_by_email": admin_user.email,
             "reviewed_at": now.isoformat(),
         }

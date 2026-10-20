@@ -777,10 +777,31 @@ export const recordProctoringEvents = async (sessionId, events) => {
 };
 
 export const getSessionProctoringTimeline = async (sessionId) => {
+  if (!sessionId || typeof sessionId !== 'string' || !sessionId.trim()) {
+    return {
+      success: false,
+      error: 'A valid session ID is required to retrieve the proctoring timeline',
+      status: 400,
+    };
+  }
+  const cleanSessionId = sessionId.trim();
   try {
-    const response = await apiClient.get(`/api/interview-rooms/sessions/${sessionId}/proctoring-events`);
+    const response = await apiClient.get(`/api/admin/interviews/sessions/${cleanSessionId}/proctoring-events`);
     return { success: true, data: response.data };
   } catch (error) {
+    // If admin endpoint is not found or user lacks admin route permission, try interview-rooms endpoint
+    if (error.response?.status === 404 || error.response?.status === 403) {
+      try {
+        const fallback = await apiClient.get(`/api/interview-rooms/sessions/${cleanSessionId}/proctoring-events`);
+        return { success: true, data: fallback.data };
+      } catch (fbErr) {
+        return {
+          success: false,
+          error: fbErr.response?.data?.detail || error.response?.data?.detail || fbErr.message || 'Failed to retrieve proctoring timeline',
+          status: fbErr.response?.status || error.response?.status,
+        };
+      }
+    }
     return {
       success: false,
       error: error.response?.data?.detail || error.message || 'Failed to retrieve proctoring timeline',
@@ -790,10 +811,32 @@ export const getSessionProctoringTimeline = async (sessionId) => {
 };
 
 export const updateSessionProctoringReview = async (sessionId, reviewStatus, reviewNotes) => {
+  if (!sessionId || typeof sessionId !== 'string' || !sessionId.trim()) {
+    return {
+      success: false,
+      error: 'A valid session ID is required to update proctoring review',
+      status: 400,
+    };
+  }
+  const validStatuses = ['unreviewed', 'cleared', 'flagged'];
+  if (!validStatuses.includes(reviewStatus)) {
+    return {
+      success: false,
+      error: `Invalid review status '${reviewStatus}'. Allowed values: ${validStatuses.join(', ')}`,
+      status: 422,
+    };
+  }
+  if (reviewNotes && reviewNotes.length > 2000) {
+    return {
+      success: false,
+      error: 'Review notes cannot exceed 2000 characters',
+      status: 422,
+    };
+  }
   try {
-    const response = await apiClient.patch(`/api/admin/interviews/sessions/${sessionId}/proctoring-review`, {
+    const response = await apiClient.patch(`/api/admin/interviews/sessions/${sessionId.trim()}/proctoring-review`, {
       review_status: reviewStatus,
-      review_notes: reviewNotes,
+      review_notes: reviewNotes?.trim() || null,
     });
     return { success: true, data: response.data };
   } catch (error) {

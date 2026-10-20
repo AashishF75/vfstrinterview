@@ -112,6 +112,8 @@ class ProctoringTimelineResponse(BaseModel):
     timeline: List[ProctoringTimelineItem]
     review_status: ProctoringReviewStatus = ProctoringReviewStatus.UNREVIEWED
     review_notes: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by_email: Optional[str] = None
 
 
 class UpdateProctoringReviewRequest(BaseModel):

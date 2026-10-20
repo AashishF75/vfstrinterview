@@ -120,13 +120,13 @@ function HomePage() {
                   <span>Workspace ({user?.role})</span>
                 </Link>
 
-                {hasRole(['platform_admin', 'university_admin', 'department_admin']) && (
+                {hasRole(['platform_admin', 'university_admin', 'department_admin', 'faculty']) && (
                   <Link
                     to="/admin"
                     className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-md shadow-indigo-500/20 transition"
                   >
                     <ShieldCheck className="w-3.5 h-3.5 text-white" />
-                    <span>Admin Suite</span>
+                    <span>{user?.role === 'faculty' ? 'Faculty Console' : 'Admin Suite'}</span>
                   </Link>
                 )}
 

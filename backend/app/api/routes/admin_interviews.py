@@ -163,10 +163,10 @@ async def assign_candidates(
 @router.get("/sessions/{session_id}/proctoring-events", response_model=ProctoringTimelineResponse)
 async def get_admin_session_proctoring_timeline(
     session_id: str,
-    current_admin: UserInDB = Depends(admin_required),
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
     db: AsyncIOMotorDatabase = Depends(get_interview_database),
 ):
-    """Retrieves proctoring event timeline and integrity metrics for admin review."""
+    """Retrieves proctoring event timeline and integrity metrics for admin and faculty review."""
     if db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -175,7 +175,7 @@ async def get_admin_session_proctoring_timeline(
     return await ProctoringService.get_session_timeline(
         db=db,
         session_id=session_id,
-        current_user=current_admin,
+        current_user=current_reviewer,
     )
 
 
@@ -183,7 +183,7 @@ async def get_admin_session_proctoring_timeline(
 async def update_session_proctoring_review(
     session_id: str,
     data: UpdateProctoringReviewRequest,
-    current_admin: UserInDB = Depends(admin_required),
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
     db: AsyncIOMotorDatabase = Depends(get_interview_database),
 ):
     """Updates the administrative integrity review decision and rationale notes."""
@@ -197,7 +197,7 @@ async def update_session_proctoring_review(
         session_id=session_id,
         review_status=data.review_status,
         review_notes=data.review_notes,
-        admin_user=current_admin,
+        admin_user=current_reviewer,
     )
 
 

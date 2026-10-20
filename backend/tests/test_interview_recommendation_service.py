@@ -380,7 +380,7 @@ def test_trend_and_consistency_calculation():
 # Security & RBAC Isolation Tests
 # ==============================================================================
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_student_cannot_access_other_student_progress(sample_student_user, other_student_user):
     """Students attempting to access another student's progress summary receive 403 Forbidden."""
     db_mock = AsyncMock()
@@ -396,7 +396,7 @@ async def test_student_cannot_access_other_student_progress(sample_student_user,
     assert "strictly restricted" in exc_info.value.detail.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_faculty_cannot_access_other_department_student(ece_faculty_user, sample_student_user):
     """Faculty from ECE cannot access CSE student progress summary (403 Forbidden)."""
     db_mock = MagicMock()
@@ -445,7 +445,7 @@ def _make_mock_db():
 # Fix 2 — Strict Multi-Tenant Authorization Matrix Tests
 # ==============================================================================
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_university_admin_cross_institution_access_denied(university_admin_user, other_inst_student_user):
     """Case 1: University admin accessing a student from another institution is denied (403)."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -468,7 +468,7 @@ async def test_university_admin_cross_institution_access_denied(university_admin
     assert "cross-institution" in exc_info.value.detail.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_faculty_cross_institution_same_department_denied(faculty_user, other_inst_student_user):
     """Case 2: Faculty accessing student from another institution with same department is denied (403)."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -492,7 +492,7 @@ async def test_faculty_cross_institution_same_department_denied(faculty_user, ot
     assert "cross-institution" in exc_info.value.detail.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_department_admin_cross_department_access_denied(dept_admin_user, sample_student_user):
     """Case 3: Department admin accessing another department in same institution is denied (403)."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -516,7 +516,7 @@ async def test_department_admin_cross_department_access_denied(dept_admin_user, 
     assert "department" in exc_info.value.detail.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_missing_student_auth_insufficient_tenant_evidence_denied(faculty_user):
     """Case 4: Missing student-auth record with insufficient tenant evidence is denied (403 fail closed)."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -541,7 +541,7 @@ async def test_missing_student_auth_insufficient_tenant_evidence_denied(faculty_
     assert "cannot be verified" in exc_info.value.detail.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_authorized_same_institution_access_allowed(faculty_user, sample_student_user, sample_profile):
     """Case 5: Authorized same-institution, same-department access is allowed (200)."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -576,7 +576,7 @@ async def test_authorized_same_institution_access_allowed(faculty_user, sample_s
     assert result.profile.department == "CSE"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_platform_admin_access_allowed_across_tenants(platform_admin_user, other_inst_student_user):
     """Case 6: Platform administrator access follows existing policy across all institutions."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -604,7 +604,7 @@ async def test_platform_admin_access_allowed_across_tenants(platform_admin_user,
     assert result.profile.registration_number == other_inst_student_user.registration_number
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_conflicting_tenant_records_denied(university_admin_user, sample_student_user):
     """Fail closed when authoritative data sources disagree on institution (403)."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -756,7 +756,7 @@ def test_topic_mastery_safe_parsing_excludes_invalid():
 # Fix 5 — Session Deduplication Tests
 # ==============================================================================
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_get_student_completed_evaluations_deduplicates_by_session_id():
     """Duplicate scorecards for the same session_id contribute exactly once."""
     db_mock, _ = _make_mock_db()
@@ -812,7 +812,7 @@ async def test_get_student_completed_evaluations_deduplicates_by_session_id():
     assert records[0]["scorecard"]["scorecard_id"] == "sc-dup-2"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_duplicate_scorecards_conflicting_scores_indeterminate_excluded():
     """Conflicting duplicate scorecards with indeterminate timestamps are excluded with diagnostic log."""
     db_mock, _ = _make_mock_db()
@@ -860,7 +860,7 @@ async def test_duplicate_scorecards_conflicting_scores_indeterminate_excluded():
 # Fix 3 — Administrative Tracking Bounded Pagination & Batching Tests
 # ==============================================================================
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_faculty_student_tracking_bounded_pagination(faculty_user):
     """Tracking applies safe skip/limit bounds and queries total count efficiently."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -888,7 +888,7 @@ async def test_faculty_student_tracking_bounded_pagination(faculty_user):
     mock_cursor.limit.assert_called_with(50)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_faculty_student_tracking_batched_queries(faculty_user):
     """Tracking batch-queries profiles, scorecards, sessions using $in instead of per-student loops."""
     db_mock, auth_db_mock = _make_mock_db()
@@ -943,7 +943,7 @@ async def test_faculty_student_tracking_batched_queries(faculty_user):
 # Fix 1 — Unique Index Safety & Conflict Detection Tests
 # ==============================================================================
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_student_profile_index_creation_spec():
     """ensure_interview_indexes applies unique=True and partialFilterExpression for string registration numbers."""
     from app.core.database import ensure_interview_indexes
@@ -970,7 +970,7 @@ async def test_student_profile_index_creation_spec():
     assert called_with_partial, "student_profiles.registration_number must have partial unique index with $type: string"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_student_profile_index_conflict_detection():
     """When unique_student_profile_reg already exists with conflicting options, skips without dropping or crashing."""
     from app.core.database import ensure_interview_indexes

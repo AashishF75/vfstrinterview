@@ -50,10 +50,10 @@ def build_gemini_mock_response(status_code: int, content_dict_or_text):
 # ==============================================================================
 
 def test_gemini_model_resolution_defaults():
-    """Verify that default model resolution selects gemini-1.5-flash."""
+    """Verify that default model resolution selects gemini-3.5-flash-lite."""
     s = Settings()
-    assert s.GEMINI_DEFAULT_MODEL == "gemini-1.5-flash"
-    assert s.resolved_gemini_model == "gemini-1.5-flash"
+    assert s.GEMINI_DEFAULT_MODEL == "gemini-3.5-flash-lite"
+    assert s.resolved_gemini_model == "gemini-3.5-flash-lite"
 
 
 def test_gemini_model_resolution_prefers_ai_model_name():

@@ -60,7 +60,7 @@ def test_deepgram_service_is_configured_check():
         assert DeepgramService.is_configured() is True
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_transcribe_audio_unconfigured_raises_503():
     """Verify transcription fails closed with 503 when API key is missing."""
     with patch.object(settings, "DEEPGRAM_API_KEY", None):
@@ -70,7 +70,7 @@ async def test_transcribe_audio_unconfigured_raises_503():
         assert "not configured" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_transcribe_audio_empty_bytes_raises_400():
     """Verify empty audio payload is rejected with 400 Bad Request."""
     with patch.object(settings, "DEEPGRAM_API_KEY", "dg_valid_key"):
@@ -80,7 +80,7 @@ async def test_transcribe_audio_empty_bytes_raises_400():
         assert "empty" in exc_info.value.detail.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_transcribe_audio_payload_too_large_raises_413():
     """Verify audio exceeding max size limit (10MB) is rejected with 413."""
     with patch.object(settings, "DEEPGRAM_API_KEY", "dg_valid_key"):
@@ -91,7 +91,7 @@ async def test_transcribe_audio_payload_too_large_raises_413():
             assert "exceeds maximum permitted size" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_transcribe_audio_successful():
     """Verify successful audio transcription parsing from Deepgram Listen API."""
     mock_response = MagicMock()
@@ -136,7 +136,7 @@ async def test_transcribe_audio_successful():
     assert kwargs["headers"]["Content-Type"] == "audio/webm"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_transcribe_audio_upstream_401_authentication_error():
     """Verify upstream Deepgram 401/403 credentials error maps to 502 Bad Gateway."""
     mock_response = MagicMock()
@@ -156,7 +156,7 @@ async def test_transcribe_audio_upstream_401_authentication_error():
             assert "rejected authorization credentials" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_transcribe_audio_timeout_handling():
     """Verify upstream Deepgram timeout maps to 504 Gateway Timeout."""
     mock_client = AsyncMock()
@@ -172,7 +172,7 @@ async def test_transcribe_audio_timeout_handling():
             assert "timed out" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_transcribe_audio_network_connection_error():
     """Verify upstream connection failure maps to 502 Bad Gateway."""
     mock_client = AsyncMock()
@@ -192,7 +192,7 @@ async def test_transcribe_audio_network_connection_error():
 # Unit Tests: Deepgram TTS (Speak API)
 # ==============================================================================
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_synthesize_speech_unconfigured_raises_503():
     """Verify speech synthesis fails closed with 503 when API key is missing."""
     with patch.object(settings, "DEEPGRAM_API_KEY", None):
@@ -202,7 +202,7 @@ async def test_synthesize_speech_unconfigured_raises_503():
         assert "not configured" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_synthesize_speech_empty_text_raises_400():
     """Verify empty speech synthesis text is rejected with 400 Bad Request."""
     with patch.object(settings, "DEEPGRAM_API_KEY", "dg_valid_key"):
@@ -212,7 +212,7 @@ async def test_synthesize_speech_empty_text_raises_400():
         assert "empty" in exc_info.value.detail.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_synthesize_speech_text_too_long_raises_400():
     """Verify text exceeding 2000 characters is rejected with 400 Bad Request."""
     with patch.object(settings, "DEEPGRAM_API_KEY", "dg_valid_key"):
@@ -222,7 +222,7 @@ async def test_synthesize_speech_text_too_long_raises_400():
         assert "exceeds maximum supported length" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_synthesize_speech_successful():
     """Verify successful speech synthesis returns raw audio bytes."""
     mock_response = MagicMock()
@@ -245,7 +245,7 @@ async def test_synthesize_speech_successful():
     assert kwargs["headers"]["Authorization"] == "Token dg_valid_key"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_synthesize_speech_timeout_handling():
     """Verify TTS timeout maps to 504 Gateway Timeout."""
     mock_client = AsyncMock()

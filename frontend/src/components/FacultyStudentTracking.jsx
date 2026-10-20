@@ -21,12 +21,14 @@ import {
   CheckCircle2,
   ExternalLink,
   Shield,
+  ShieldCheck,
   GraduationCap,
 } from 'lucide-react';
 import {
   getAdminStudentTracking,
   getAdminStudentDetail,
 } from '../api/client';
+import ProctoringTimelineModal from './ProctoringTimelineModal';
 
 export default function FacultyStudentTracking({ user }) {
   const [students, setStudents] = useState([]);
@@ -43,6 +45,9 @@ export default function FacultyStudentTracking({ user }) {
   const [selectedLevel, setSelectedLevel] = useState('ALL');
   const [skip, setSkip] = useState(0);
   const limit = 15;
+
+  // Selected session for Proctoring Timeline & Review modal
+  const [selectedTimelineSessionId, setSelectedTimelineSessionId] = useState(null);
 
   // Detail Modal State
   const [selectedStudentReg, setSelectedStudentReg] = useState(null);
@@ -464,8 +469,17 @@ export default function FacultyStudentTracking({ user }) {
                             <div className="font-semibold text-slate-200">{h.selected_role || h.interview_title}</div>
                             <div className="text-[10px] font-mono text-slate-400">{new Date(h.completed_at).toLocaleString()}</div>
                           </div>
-                          <div className="flex items-center space-x-3">
-                            <span className="font-mono font-bold text-emerald-400">{h.overall_score} / 10</span>
+                          <div className="flex items-center space-x-2">
+                            <span className="font-mono font-bold text-emerald-400 mr-1">{h.overall_score} / 10</span>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTimelineSessionId(h.session_id)}
+                              className="px-2.5 py-1 rounded bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-300 font-semibold text-[11px] flex items-center space-x-1 transition shadow-sm"
+                              title="Inspect session proctoring events & review"
+                            >
+                              <ShieldCheck className="w-3 h-3 text-indigo-400" />
+                              <span>Proctoring</span>
+                            </button>
                             <Link
                               to={h.report_url}
                               className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold text-[11px] flex items-center space-x-1"
@@ -483,6 +497,14 @@ export default function FacultyStudentTracking({ user }) {
             ) : null}
           </div>
         </div>
+      )}
+
+      {/* Proctoring Timeline & Faculty Review Modal */}
+      {selectedTimelineSessionId && (
+        <ProctoringTimelineModal
+          sessionId={selectedTimelineSessionId}
+          onClose={() => setSelectedTimelineSessionId(null)}
+        />
       )}
     </div>
   );

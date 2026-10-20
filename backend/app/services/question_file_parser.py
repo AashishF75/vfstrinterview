@@ -98,8 +98,8 @@ def parse_role_pdf_questions(
         set_match = re.search(r"SET\s*(\d+)", page_text)
         set_num = int(set_match.group(1)) if set_match else p_idx
 
-        # Regex matching Q<num>. [<bracket>] <question_prompt>\n(Answer guide|Expected approach): <answer_text>
-        pattern = r"Q(\d+)\.\s*\[([^\]]+)\]\s*(.*?)\n(?:Answer guide|Expected approach):\s*(.*?)(?=\n[ \t]*Q\d+\.|\Z)"
+        # Regex matching Q<num>. [<bracket>] <question_prompt>\n[ \t]*(Answer guide|Expected approach): <answer_text>
+        pattern = r"Q(\d+)\.\s*\[([^\]]+)\]\s*(.*?)\n[ \t]*(?:Answer guide|Expected approach):\s*(.*?)(?=\n[ \t]*Q\d+\.|\Z)"
         matches = list(re.finditer(pattern, page_text, re.DOTALL))
 
         for m in matches:

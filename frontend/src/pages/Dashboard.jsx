@@ -417,6 +417,30 @@ export default function Dashboard() {
           />
         )}
 
+        {/* FACULTY & ADMIN PERFORMANCE / PROCTORING WORKSPACE SHORTCUT */}
+        {user?.role !== 'student' && (
+          <div className="p-6 sm:p-7 rounded-3xl bg-gradient-to-br from-indigo-950/40 via-slate-900 to-slate-950 border border-indigo-500/30 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xl">
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <ShieldCheck className="w-5 h-5 text-indigo-400" />
+                <h2 className="text-base font-bold text-white">
+                  {user?.role === 'faculty' ? 'Faculty Performance Tracking & Proctoring Console' : 'Administrative Review & Proctoring Suite'}
+                </h2>
+              </div>
+              <p className="text-xs text-slate-300">
+                Inspect student progression, topic mastery metrics, examine chronological proctoring timelines, and record faculty review decisions.
+              </p>
+            </div>
+            <Link
+              to="/admin"
+              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-lg shadow-indigo-600/20 transition shrink-0 flex items-center space-x-1.5 self-start sm:self-auto"
+            >
+              <span>{user?.role === 'faculty' ? 'Open Faculty Console' : 'Open Admin Suite'}</span>
+              <ChevronRight className="w-4 h-4" />
+            </Link>
+          </div>
+        )}
+
         {/* ROLE SELECTION & SELF-ENROLLMENT SECTION */}
         {user?.role === 'student' && (
           <section className="mb-8 p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-[#091122]/90 via-[#080e1b]/90 to-[#060a14]/90 border border-slate-800/80 shadow-2xl relative overflow-hidden" aria-labelledby="role-selection-heading">
