@@ -276,39 +276,62 @@ class InterviewSessionService:
 
         target_role = InterviewSessionService._resolve_interview_role(assignment, interview)
 
+        custom_set_id = interview.get("question_set_id")
+        stored_q = None
+
+        # Check custom question set selection first
+        if custom_set_id:
+            if custom_set_id.startswith("platform-role-"):
+                role_map = {
+                    "platform-role-associate-software-engineer": "Associate Software Engineer",
+                    "platform-role-software-development-engineer": "Software Development Engineer",
+                    "platform-role-product-engineer": "Product Engineer",
+                    "platform-role-system-engineer": "System Engineer",
+                    "platform-role-testing-engineer": "Testing Engineer",
+                }
+                target_role = role_map.get(custom_set_id, target_role)
+            else:
+                user_inst = (student_user.institution_id or "VFSTR").strip().upper()
+                inst_check = await db[QUESTIONS_COLLECTION].find_one({"import_batch_id": custom_set_id})
+                if inst_check and (inst_check.get("institution_id") or "VFSTR").strip().upper() == user_inst:
+                    stored_q = await db[QUESTIONS_COLLECTION].find_one(
+                        {"import_batch_id": custom_set_id},
+                        sort=[("question_number", 1), ("_id", 1)],
+                    )
+
         interview_or = [{"interview_id": assignment["interview_id"]}, {"interview_id": None}]
         diff_or = [{"difficulty": initial_diff.value}, {"difficulty": None}, {"difficulty": {"$exists": False}}]
 
-        stored_q = None
         try:
-            # 1. Prefer target role, conceptual, matching difficulty
-            q1_filter: Dict[str, Any] = {
-                "$and": [
-                    {"$or": interview_or},
-                    {"$or": diff_or},
-                ],
-                "question_type": "conceptual",
-            }
-            if target_role:
-                q1_filter["role"] = target_role
-            stored_q = await db[QUESTIONS_COLLECTION].find_one(q1_filter)
-
-            # 2. Prefer target role, conceptual (any difficulty in bank)
             if not stored_q:
-                q2_filter = {
-                    "$or": interview_or,
+                # 1. Prefer target role, conceptual, matching difficulty
+                q1_filter: Dict[str, Any] = {
+                    "$and": [
+                        {"$or": interview_or},
+                        {"$or": diff_or},
+                    ],
                     "question_type": "conceptual",
                 }
                 if target_role:
-                    q2_filter["role"] = target_role
-                stored_q = await db[QUESTIONS_COLLECTION].find_one(q2_filter)
+                    q1_filter["role"] = target_role
+                stored_q = await db[QUESTIONS_COLLECTION].find_one(q1_filter)
 
-            # 3. Target role (any question type / any difficulty)
-            if not stored_q:
-                q3_filter = {"$or": interview_or}
-                if target_role:
-                    q3_filter["role"] = target_role
-                stored_q = await db[QUESTIONS_COLLECTION].find_one(q3_filter)
+                # 2. Prefer target role, conceptual (any difficulty in bank)
+                if not stored_q:
+                    q2_filter = {
+                        "$or": interview_or,
+                        "question_type": "conceptual",
+                    }
+                    if target_role:
+                        q2_filter["role"] = target_role
+                    stored_q = await db[QUESTIONS_COLLECTION].find_one(q2_filter)
+
+                # 3. Target role (any question type / any difficulty)
+                if not stored_q:
+                    q3_filter = {"$or": interview_or}
+                    if target_role:
+                        q3_filter["role"] = target_role
+                    stored_q = await db[QUESTIONS_COLLECTION].find_one(q3_filter)
         except Exception as e:
             logger.warning("Error checking stored questions: %s", e)
 
@@ -347,6 +370,7 @@ class InterviewSessionService:
             "selected_role": target_role,
             "student_registration_number": clean_reg,
             "student_user_id": str(student_user.id),
+            "student_institution_id": (student_user.institution_id or "VFSTR").strip().upper(),
             "session_status": SessionStatus.IN_PROGRESS.value,
             "current_question_index": 1,
             "total_questions_target": total_questions,
@@ -934,19 +958,33 @@ class InterviewSessionService:
         diff_or = [{"difficulty": next_diff.value}, {"difficulty": None}, {"difficulty": {"$exists": False}}]
 
         stored_next_q = None
+        custom_set_id = interview.get("question_set_id") if interview else None
+        if custom_set_id and not custom_set_id.startswith("platform-role-"):
+            user_inst = (session.get("student_institution_id") or "VFSTR").strip().upper()
+            inst_check = await db[QUESTIONS_COLLECTION].find_one({"import_batch_id": custom_set_id})
+            if inst_check and (inst_check.get("institution_id") or "VFSTR").strip().upper() == user_inst:
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(
+                    {
+                        "import_batch_id": custom_set_id,
+                        "question_text": {"$nin": all_asked},
+                    },
+                    sort=[("question_number", 1), ("_id", 1)],
+                )
+
         try:
-            # 1. Matching role, target_type, unasked, matching difficulty
-            query_tier1 = {
-                "$and": [
-                    {"$or": interview_or},
-                    {"$or": diff_or},
-                ],
-                "question_text": {"$nin": all_asked},
-                "question_type": target_type,
-            }
-            if target_role:
-                query_tier1["role"] = target_role
-            stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier1)
+            if not stored_next_q:
+                # 1. Matching role, target_type, unasked, matching difficulty
+                query_tier1 = {
+                    "$and": [
+                        {"$or": interview_or},
+                        {"$or": diff_or},
+                    ],
+                    "question_text": {"$nin": all_asked},
+                    "question_type": target_type,
+                }
+                if target_role:
+                    query_tier1["role"] = target_role
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier1)
 
             # 2. Matching role, target_type, unasked (any difficulty in bank)
             if not stored_next_q:
@@ -1315,18 +1353,32 @@ class InterviewSessionService:
         diff_or = [{"difficulty": curr_diff.value}, {"difficulty": None}, {"difficulty": {"$exists": False}}]
 
         stored_next_q = None
+        custom_set_id = interview.get("question_set_id") if interview else None
+        if custom_set_id and not custom_set_id.startswith("platform-role-"):
+            user_inst = (session.get("student_institution_id") or "VFSTR").strip().upper()
+            inst_check = await db[QUESTIONS_COLLECTION].find_one({"import_batch_id": custom_set_id})
+            if inst_check and (inst_check.get("institution_id") or "VFSTR").strip().upper() == user_inst:
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(
+                    {
+                        "import_batch_id": custom_set_id,
+                        "question_text": {"$nin": all_asked},
+                    },
+                    sort=[("question_number", 1), ("_id", 1)],
+                )
+
         try:
-            query_tier1 = {
-                "$and": [
-                    {"$or": interview_or},
-                    {"$or": diff_or},
-                ],
-                "question_text": {"$nin": all_asked},
-                "question_type": target_type,
-            }
-            if target_role:
-                query_tier1["role"] = target_role
-            stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier1)
+            if not stored_next_q:
+                query_tier1 = {
+                    "$and": [
+                        {"$or": interview_or},
+                        {"$or": diff_or},
+                    ],
+                    "question_text": {"$nin": all_asked},
+                    "question_type": target_type,
+                }
+                if target_role:
+                    query_tier1["role"] = target_role
+                stored_next_q = await db[QUESTIONS_COLLECTION].find_one(query_tier1)
 
             if not stored_next_q:
                 query_tier2 = {

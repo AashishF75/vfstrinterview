@@ -383,11 +383,14 @@ export const updateAdminInterview = async (interviewId, updateData) => {
   }
 };
 
-export const searchEligibleCandidates = async ({ interviewId, section, search, limit = 300 } = {}) => {
+export const searchEligibleCandidates = async ({ interviewId, section, department, batchCohort, eligibility, search, limit = 300 } = {}) => {
   try {
     const params = new URLSearchParams();
     if (interviewId) params.append('interview_id', interviewId);
     if (section && section !== 'ALL') params.append('section', section);
+    if (department && department !== 'ALL') params.append('department', department);
+    if (batchCohort && batchCohort !== 'ALL') params.append('batch_cohort', batchCohort);
+    if (eligibility && eligibility !== 'ALL') params.append('eligibility', eligibility);
     if (search) params.append('search', search);
     if (limit) params.append('limit', limit.toString());
 
@@ -397,6 +400,32 @@ export const searchEligibleCandidates = async ({ interviewId, section, search, l
     return {
       success: false,
       error: error.response?.data?.detail || error.message || 'Failed to search candidates',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const getQuestionSets = async () => {
+  try {
+    const response = await apiClient.get('/api/admin/interviews/question-sets');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch question sets',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const previewQuestionSet = async (setId, limit = 10) => {
+  try {
+    const response = await apiClient.get(`/api/admin/interviews/question-sets/${encodeURIComponent(setId)}/preview?limit=${limit}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to preview question set',
       status: error.response?.status,
     };
   }
@@ -926,6 +955,63 @@ export const synthesizeInterviewSpeech = async (sessionId, text) => {
     return {
       success: false,
       error: errorDetail,
+      status: error.response?.status,
+    };
+  }
+};
+
+// ==============================================================================
+// Institution Question Bank Management APIs
+// ==============================================================================
+
+export const previewQuestionFile = async (file, defaultTopic = 'Technical Assessment') => {
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (defaultTopic) {
+      formData.append('default_topic', defaultTopic);
+    }
+    const response = await apiClient.post('/api/admin/interviews/questions/preview', formData, {
+      headers: {
+        'Content-Type': undefined,
+      },
+      timeout: 30000,
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to parse question file',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const saveConfirmedQuestions = async (payload) => {
+  try {
+    const response = await apiClient.post('/api/admin/interviews/questions/save', payload, {
+      timeout: 30000,
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to save confirmed questions',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const getInstitutionQuestions = async (params = {}) => {
+  try {
+    const response = await apiClient.get('/api/admin/interviews/questions', {
+      params,
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch question bank',
       status: error.response?.status,
     };
   }

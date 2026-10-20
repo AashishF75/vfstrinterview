@@ -280,7 +280,7 @@ def extract_questions_from_json(
         else:
             continue
 
-        if len(q_text) >= 10:
+        if q_text:
             questions.append({
                 "question_id": f"json-{idx}",
                 "role": role,
@@ -327,11 +327,17 @@ def extract_questions_from_csv(
                 break
 
         diff = QuestionDifficulty.MEDIUM
-        for key in ["difficulty", "level", "Difficulty"]:
+        for key in ["difficulty", "level", "Difficulty", "Level"]:
             if key in row and row[key]:
-                detected = _detect_difficulty(row[key])
-                if detected:
-                    diff = detected
+                raw_diff = str(row[key]).strip().lower()
+                if "easy" in raw_diff:
+                    diff = QuestionDifficulty.EASY
+                elif "hard" in raw_diff:
+                    diff = QuestionDifficulty.HARD
+                elif "medium" in raw_diff:
+                    diff = QuestionDifficulty.MEDIUM
+                else:
+                    diff = _detect_difficulty(row[key]) or QuestionDifficulty.MEDIUM
                 break
 
         ans = None
@@ -340,11 +346,20 @@ def extract_questions_from_csv(
                 ans = row[key].strip()
                 break
 
-        role = row.get("role")
-        q_type = row.get("question_type", "conceptual")
+        role = None
+        for key in ["role", "Role", "position", "Position"]:
+            if key in row and row[key]:
+                role = row[key].strip()
+                break
+
+        q_type = "conceptual"
+        for key in ["question_type", "QuestionType", "questionType", "type", "Type"]:
+            if key in row and row[key]:
+                q_type = row[key].strip().lower()
+                break
 
         cleaned = _clean_question_text(q_text)
-        if len(cleaned) >= 10:
+        if cleaned:
             questions.append({
                 "question_id": f"csv-{idx}",
                 "role": role,

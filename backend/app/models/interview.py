@@ -34,6 +34,8 @@ class UniversityInterviewBase(BaseModel):
     duration_minutes: int = Field(..., gt=0, le=360)
     target_cohort: Optional[str] = "2024-2028"
     target_department: Optional[str] = "CSE"
+    question_set_id: Optional[str] = None
+    question_set_name: Optional[str] = None
 
 
 class UniversityInterviewCreate(UniversityInterviewBase):
@@ -74,6 +76,8 @@ class UniversityInterviewUpdate(BaseModel):
     scheduled_end_time: Optional[datetime] = None
     duration_minutes: Optional[int] = Field(None, gt=0, le=360)
     status: Optional[InterviewStatus] = None
+    question_set_id: Optional[str] = None
+    question_set_name: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_update(self) -> "UniversityInterviewUpdate":
@@ -107,6 +111,8 @@ class UniversityInterviewResponse(BaseModel):
     created_by_email: str
     target_cohort: Optional[str] = None
     target_department: Optional[str] = None
+    question_set_id: Optional[str] = None
+    question_set_name: Optional[str] = None
     total_assignments_count: int = 0
     status_counts: Dict[str, int] = Field(default_factory=dict)
     created_at: datetime
@@ -163,11 +169,14 @@ class StudentAssignmentResponse(BaseModel):
 class CandidateSummaryResponse(BaseModel):
     s_no: int
     registration_number: str
+    student_name: Optional[str] = None
     email: str
     section: str
     review_status: str
     interview_eligible: bool
     batch_cohort: Optional[str] = None
+    department: Optional[str] = None
+    institution_id: Optional[str] = "VFSTR"
     already_assigned: bool = False
 
     model_config = ConfigDict(from_attributes=True)

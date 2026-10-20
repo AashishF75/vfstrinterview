@@ -8,6 +8,8 @@ import {
   updateAdminInterview,
   searchEligibleCandidates,
   assignCandidatesToInterview,
+  getQuestionSets,
+  previewQuestionSet,
 } from '../api/client';
 import { 
   ShieldCheck, 
@@ -26,14 +28,16 @@ import {
   Filter,
   AlertCircle,
   X,
-  Check,
-  ChevronRight,
   RefreshCw,
   Ban,
   Eye,
+  Database,
+  BookOpen,
+  UserCheck,
 } from 'lucide-react';
 import ProctoringTimelineModal from '../components/ProctoringTimelineModal';
 import FacultyStudentTracking from '../components/FacultyStudentTracking';
+import InstitutionQuestionBank from '../components/InstitutionQuestionBank';
 
 export default function AdminConsole() {
   const { user, logout } = useAuth();
@@ -45,7 +49,12 @@ export default function AdminConsole() {
   // Interviews state
   const [interviews, setInterviews] = useState([]);
   const [interviewsLoading, setInterviewsLoading] = useState(false);
-  const [selectedInterview, setSelectedInterview] = useState(null);
+
+  // Question Sets State
+  const [questionSets, setQuestionSets] = useState([]);
+  const [questionSetsLoading, setQuestionSetsLoading] = useState(false);
+  const [previewSetData, setPreviewSetData] = useState(null);
+  const [previewSetLoading, setPreviewSetLoading] = useState(false);
 
   // Create Interview Modal State
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -58,16 +67,22 @@ export default function AdminConsole() {
     duration_minutes: 45,
     target_cohort: '2024-2028',
     target_department: 'CSE',
+    question_set_id: '',
+    question_set_name: '',
   });
   const [createError, setCreateError] = useState(null);
   const [createSubmitting, setCreateSubmitting] = useState(false);
 
   // Candidate Assignment Modal State
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showAssignConfirmModal, setShowAssignConfirmModal] = useState(false);
   const [assignInterview, setAssignInterview] = useState(null);
   const [candidates, setCandidates] = useState([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [selectedSection, setSelectedSection] = useState('ALL');
+  const [selectedDepartment, setSelectedDepartment] = useState('ALL');
+  const [selectedBatchCohort, setSelectedBatchCohort] = useState('ALL');
+  const [selectedEligibility, setSelectedEligibility] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRegs, setSelectedRegs] = useState([]);
   const [assignSubmitting, setAssignSubmitting] = useState(false);
@@ -99,13 +114,34 @@ export default function AdminConsole() {
     setInterviewsLoading(false);
   }, []);
 
+  const fetchQuestionSets = useCallback(async () => {
+    setQuestionSetsLoading(true);
+    const res = await getQuestionSets();
+    if (res.success && res.data?.items) {
+      setQuestionSets(res.data.items);
+    }
+    setQuestionSetsLoading(false);
+  }, []);
+
   useEffect(() => {
     fetchInterviews();
-  }, [fetchInterviews]);
+    fetchQuestionSets();
+  }, [fetchInterviews, fetchQuestionSets]);
 
   const handleLogout = async () => {
     await logout();
     navigate('/login');
+  };
+
+  // Handle Question Set Preview
+  const handlePreviewQuestionSet = async (setId) => {
+    if (!setId) return;
+    setPreviewSetLoading(true);
+    const res = await previewQuestionSet(setId, 10);
+    if (res.success && res.data) {
+      setPreviewSetData(res.data);
+    }
+    setPreviewSetLoading(false);
   };
 
   // Handle Create Interview
@@ -125,6 +161,8 @@ export default function AdminConsole() {
       scheduled_start_time: new Date(createForm.scheduled_start_time).toISOString(),
       scheduled_end_time: new Date(createForm.scheduled_end_time).toISOString(),
       duration_minutes: Number(createForm.duration_minutes),
+      question_set_id: createForm.question_set_id || null,
+      question_set_name: createForm.question_set_name || null,
     };
 
     const res = await createAdminInterview(payload);
@@ -139,6 +177,8 @@ export default function AdminConsole() {
         duration_minutes: 45,
         target_cohort: '2024-2028',
         target_department: 'CSE',
+        question_set_id: '',
+        question_set_name: '',
       });
       fetchInterviews();
     } else {
@@ -151,18 +191,29 @@ export default function AdminConsole() {
   const openAssignModal = async (interview) => {
     setAssignInterview(interview);
     setShowAssignModal(true);
+    setShowAssignConfirmModal(false);
     setSelectedRegs([]);
     setAssignResult(null);
-    loadCandidates(interview.interview_id, selectedSection, searchQuery);
+    const initialDept = interview.target_department || 'ALL';
+    const initialCohort = interview.target_cohort || 'ALL';
+    setSelectedSection('ALL');
+    setSelectedDepartment(initialDept);
+    setSelectedBatchCohort(initialCohort);
+    setSelectedEligibility('ALL');
+    setSearchQuery('');
+    loadCandidates(interview.interview_id, 'ALL', initialDept, initialCohort, 'ALL', '');
   };
 
-  const loadCandidates = async (intId, sec, search) => {
+  const loadCandidates = async (intId, sec, dept, cohort, elig, search) => {
     setCandidatesLoading(true);
     const res = await searchEligibleCandidates({
       interviewId: intId,
       section: sec,
+      department: dept,
+      batchCohort: cohort,
+      eligibility: elig,
       search: search,
-      limit: 200,
+      limit: 300,
     });
     if (res.success) {
       setCandidates(res.data);
@@ -170,17 +221,21 @@ export default function AdminConsole() {
     setCandidatesLoading(false);
   };
 
-  const handleSectionFilterChange = (sec) => {
-    setSelectedSection(sec);
-    if (assignInterview) {
-      loadCandidates(assignInterview.interview_id, sec, searchQuery);
-    }
-  };
+  const handleFilterUpdate = (updates = {}) => {
+    const sec = updates.section !== undefined ? updates.section : selectedSection;
+    const dept = updates.department !== undefined ? updates.department : selectedDepartment;
+    const cohort = updates.cohort !== undefined ? updates.cohort : selectedBatchCohort;
+    const elig = updates.eligibility !== undefined ? updates.eligibility : selectedEligibility;
+    const search = updates.search !== undefined ? updates.search : searchQuery;
 
-  const handleSearchSubmit = (e) => {
-    e.preventDefault();
+    if (updates.section !== undefined) setSelectedSection(updates.section);
+    if (updates.department !== undefined) setSelectedDepartment(updates.department);
+    if (updates.cohort !== undefined) setSelectedBatchCohort(updates.cohort);
+    if (updates.eligibility !== undefined) setSelectedEligibility(updates.eligibility);
+    if (updates.search !== undefined) setSearchQuery(updates.search);
+
     if (assignInterview) {
-      loadCandidates(assignInterview.interview_id, selectedSection, searchQuery);
+      loadCandidates(assignInterview.interview_id, sec, dept, cohort, elig, search);
     }
   };
 
@@ -193,12 +248,19 @@ export default function AdminConsole() {
   };
 
   const handleSelectAllVisible = () => {
-    const assignableRegs = candidates.filter((c) => !c.already_assigned).map((c) => c.registration_number);
+    const assignableRegs = candidates
+      .filter((c) => !c.already_assigned && c.is_eligible !== false)
+      .map((c) => c.registration_number);
     setSelectedRegs(Array.from(new Set([...selectedRegs, ...assignableRegs])));
   };
 
   const handleDeselectAll = () => {
     setSelectedRegs([]);
+  };
+
+  const handleOpenAssignConfirmation = () => {
+    if (selectedRegs.length === 0) return;
+    setShowAssignConfirmModal(true);
   };
 
   const handleExecuteAssignment = async () => {
@@ -209,12 +271,14 @@ export default function AdminConsole() {
     const res = await assignCandidatesToInterview(assignInterview.interview_id, selectedRegs);
     if (res.success) {
       setAssignResult(res.data);
+      setShowAssignConfirmModal(false);
       // Reload candidates and parent interviews list
-      loadCandidates(assignInterview.interview_id, selectedSection, searchQuery);
+      loadCandidates(assignInterview.interview_id, selectedSection, selectedDepartment, selectedBatchCohort, selectedEligibility, searchQuery);
       fetchInterviews();
       setSelectedRegs([]);
     } else {
       setAssignResult({ error: res.error });
+      setShowAssignConfirmModal(false);
     }
     setAssignSubmitting(false);
   };
@@ -325,8 +389,22 @@ export default function AdminConsole() {
             <span>Proctoring & Integrity Review</span>
           </button>
 
+          <button
+            id="admin-tab-question-bank"
+            onClick={() => setAdminTab('questions')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-2 ${
+              adminTab === 'questions'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+                : 'bg-slate-900/60 text-slate-400 hover:text-slate-200 border border-slate-800 hover:border-slate-700'
+            }`}
+          >
+            <Database className="w-4 h-4 text-emerald-400" />
+            <span>Institution Question Bank</span>
+          </button>
+
           {(user?.role === 'platform_admin' || user?.role === 'university_admin' || user?.role === 'department_admin') && (
             <button
+              id="admin-tab-interviews"
               onClick={() => setAdminTab('interviews')}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-2 ${
                 adminTab === 'interviews'
@@ -397,6 +475,8 @@ export default function AdminConsole() {
               </ul>
             </div>
           </div>
+        ) : adminTab === 'questions' ? (
+          <InstitutionQuestionBank user={user} />
         ) : (
           <>
             {/* Interviews List Section */}
@@ -461,6 +541,12 @@ export default function AdminConsole() {
                       <span className="text-[11px] font-mono text-slate-400">
                         {item.target_department} • {item.target_cohort}
                       </span>
+                      {item.question_set_name && (
+                        <span className="text-[11px] px-2 py-0.5 rounded bg-violet-950/60 text-violet-300 border border-violet-800/50 flex items-center gap-1 font-medium">
+                          <BookOpen className="w-3 h-3" />
+                          <span>{item.question_set_name}</span>
+                        </span>
+                      )}
                     </div>
 
                     {item.description && (
@@ -730,6 +816,89 @@ export default function AdminConsole() {
               </div>
 
               <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Question Bank / Question Set
+                </label>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={createForm.question_set_id}
+                    onChange={(e) => {
+                      const sel = questionSets.find((s) => s.set_id === e.target.value);
+                      setCreateForm({
+                        ...createForm,
+                        question_set_id: e.target.value,
+                        question_set_name: sel ? sel.name : '',
+                      });
+                    }}
+                    className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="">
+                      {questionSetsLoading ? 'Loading question sets...' : 'Default Platform Adaptive AI Pool (Dynamic across all 1,875 platform questions)'}
+                    </option>
+                    {questionSets.filter((s) => s.source === 'platform').length > 0 && (
+                      <optgroup label="Platform Canonical Role Banks (375 questions each)">
+                        {questionSets
+                          .filter((s) => s.source === 'platform')
+                          .map((s) => (
+                            <option key={s.set_id} value={s.set_id}>
+                              {s.name} ({s.question_count} Qs - {s.difficulty})
+                            </option>
+                          ))}
+                      </optgroup>
+                    )}
+                    {questionSets.filter((s) => s.source === 'institution').length > 0 && (
+                      <optgroup label="Institution Verified Uploads (Your Campus Question Sets)">
+                        {questionSets
+                          .filter((s) => s.source === 'institution')
+                          .map((s) => (
+                            <option key={s.set_id} value={s.set_id}>
+                              {s.name} ({s.question_count} Qs{s.department ? ` - Dept: ${s.department}` : ''})
+                            </option>
+                          ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  {createForm.question_set_id && (
+                    <button
+                      type="button"
+                      onClick={() => handlePreviewQuestionSet(createForm.question_set_id)}
+                      disabled={previewSetLoading}
+                      className="px-3 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-medium transition flex items-center space-x-1 shrink-0"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>{previewSetLoading ? 'Loading...' : 'Preview Set'}</span>
+                    </button>
+                  )}
+                </div>
+                {createForm.question_set_id && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 text-[11px] text-slate-300 flex items-center justify-between">
+                    {(() => {
+                      const cur = questionSets.find((s) => s.set_id === createForm.question_set_id);
+                      if (!cur) return null;
+                      return (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-white">{cur.name}</span>
+                            <span className="text-slate-400">• {cur.question_count} questions</span>
+                            <span className="text-slate-400">• Topic: {cur.topic || 'Assessment'}</span>
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono ${
+                              cur.source === 'institution'
+                                ? 'bg-indigo-950 text-indigo-300 border border-indigo-800'
+                                : 'bg-slate-800 text-slate-300'
+                            }`}
+                          >
+                            {cur.source === 'institution' ? 'Institution Verified' : 'Platform Standard'}
+                          </span>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1">Interview Instructions *</label>
                 <textarea
                   rows={3}
@@ -761,10 +930,82 @@ export default function AdminConsole() {
         </div>
       )}
 
+      {/* QUESTION SET PREVIEW MODAL */}
+      {previewSetData && (
+        <div className="fixed inset-0 z-[60] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl relative max-h-[85vh] flex flex-col">
+            <button
+              onClick={() => setPreviewSetData(null)}
+              className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 transition"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="mb-4">
+              <div className="flex items-center gap-2 mb-1">
+                <BookOpen className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-lg font-bold text-white">{previewSetData.name}</h3>
+                <span
+                  className={`ml-2 px-2 py-0.5 rounded text-[10px] font-mono uppercase ${
+                    previewSetData.source === 'institution'
+                      ? 'bg-indigo-950 text-indigo-300 border border-indigo-800'
+                      : 'bg-slate-800 text-slate-300'
+                  }`}
+                >
+                  {previewSetData.source}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">{previewSetData.description}</p>
+              <div className="flex flex-wrap gap-3 mt-2 text-xs text-slate-300">
+                <span>Total Questions: <strong className="text-white">{previewSetData.total_questions}</strong></span>
+                <span>Topic: <strong className="text-white">{previewSetData.topic}</strong></span>
+                <span>Difficulty: <strong className="text-white">{previewSetData.difficulty}</strong></span>
+                {previewSetData.department && (
+                  <span>Dept: <strong className="text-white">{previewSetData.department}</strong></span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1 border-t border-slate-800 pt-3">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                Sample Questions Preview (First {previewSetData.preview_items?.length || 0}):
+              </div>
+              {previewSetData.preview_items?.map((q, idx) => (
+                <div key={idx} className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 text-xs">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-mono text-indigo-400 font-semibold">Q{idx + 1}</span>
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">{q.difficulty || 'medium'}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">{q.topic || 'Technical'}</span>
+                    </div>
+                  </div>
+                  <div className="text-white font-medium mb-1">{q.question_text}</div>
+                  {q.sample_answer && (
+                    <div className="text-slate-400 text-[11px] bg-slate-900/60 p-2 rounded border border-slate-800/50 mt-1">
+                      <span className="text-slate-500 font-semibold">Sample Answer: </span>
+                      {q.sample_answer}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-4 border-t border-slate-800 flex justify-end">
+              <button
+                onClick={() => setPreviewSetData(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition"
+              >
+                Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* CANDIDATE ASSIGNMENT MODAL */}
       {showAssignModal && assignInterview && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-4xl w-full p-6 shadow-2xl relative max-h-[90vh] flex flex-col">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-5xl w-full p-6 shadow-2xl relative max-h-[90vh] flex flex-col">
             <button
               onClick={() => setShowAssignModal(false)}
               className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 transition"
@@ -776,39 +1017,99 @@ export default function AdminConsole() {
               <h3 className="text-lg font-bold text-white">Assign Eligible Candidates</h3>
               <p className="text-xs text-slate-400">
                 Target Interview: <strong className="text-indigo-300">{assignInterview.title}</strong>
+                {assignInterview.question_set_name && (
+                  <span className="ml-2 text-violet-300 font-mono">({assignInterview.question_set_name})</span>
+                )}
               </p>
             </div>
 
             {/* Filter Bar */}
             <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-slate-950/80 border border-slate-800 mb-4">
-              <div className="flex items-center space-x-2">
-                <Filter className="w-4 h-4 text-indigo-400" />
-                <span className="text-xs text-slate-300">Section:</span>
-                <select
-                  value={selectedSection}
-                  onChange={(e) => handleSectionFilterChange(e.target.value)}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
-                >
-                  <option value="ALL">All Sections (1 - 22)</option>
-                  {Array.from({ length: 22 }, (_, i) => String(i + 1)).map((sec) => (
-                    <option key={sec} value={sec}>
-                      Section {sec}
-                    </option>
-                  ))}
-                </select>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center space-x-1.5 text-xs text-indigo-400 font-medium">
+                  <Filter className="w-3.5 h-3.5" />
+                  <span>Filters:</span>
+                </div>
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[11px] text-slate-400">Dept:</span>
+                  <select
+                    value={selectedDepartment}
+                    onChange={(e) => handleFilterUpdate({ department: e.target.value })}
+                    className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
+                  >
+                    <option value="ALL">All Depts</option>
+                    <option value="CSE">CSE</option>
+                    <option value="ECE">ECE</option>
+                    <option value="IT">IT</option>
+                    <option value="MECH">MECH</option>
+                    <option value="CIVIL">CIVIL</option>
+                    <option value="AI&DS">AI&DS</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[11px] text-slate-400">Cohort:</span>
+                  <select
+                    value={selectedBatchCohort}
+                    onChange={(e) => handleFilterUpdate({ cohort: e.target.value })}
+                    className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
+                  >
+                    <option value="ALL">All Cohorts</option>
+                    <option value="2024-2028">2024-2028</option>
+                    <option value="2023-2027">2023-2027</option>
+                    <option value="2022-2026">2022-2026</option>
+                    <option value="2021-2025">2021-2025</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[11px] text-slate-400">Sec:</span>
+                  <select
+                    value={selectedSection}
+                    onChange={(e) => handleFilterUpdate({ section: e.target.value })}
+                    className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
+                  >
+                    <option value="ALL">All (1-22)</option>
+                    {Array.from({ length: 22 }, (_, i) => String(i + 1)).map((sec) => (
+                      <option key={sec} value={sec}>
+                        Sec {sec}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-[11px] text-slate-400">Eligibility:</span>
+                  <select
+                    value={selectedEligibility}
+                    onChange={(e) => handleFilterUpdate({ eligibility: e.target.value })}
+                    className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
+                  >
+                    <option value="ALL">All Statuses</option>
+                    <option value="eligible">Approved Eligible</option>
+                    <option value="ineligible">Ineligible</option>
+                  </select>
+                </div>
               </div>
 
-              <form onSubmit={handleSearchSubmit} className="flex items-center space-x-2 flex-1 max-w-xs">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleFilterUpdate({ search: searchQuery });
+                }}
+                className="flex items-center space-x-1.5 flex-1 min-w-[200px]"
+              >
                 <input
                   type="text"
-                  placeholder="Search Roll No / Email..."
+                  placeholder="Search Reg No, Name, Email..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
+                  className="w-full px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none"
                 />
                 <button
                   type="submit"
-                  className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition"
+                  className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition shrink-0"
+                  title="Search candidates"
                 >
                   <Search className="w-3.5 h-3.5" />
                 </button>
@@ -816,12 +1117,15 @@ export default function AdminConsole() {
 
               <div className="flex items-center space-x-2">
                 <button
+                  type="button"
                   onClick={handleSelectAllVisible}
                   className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  title="Select all visible unassigned eligible candidates"
                 >
-                  Select All
+                  Select All Visible
                 </button>
                 <button
+                  type="button"
                   onClick={handleDeselectAll}
                   className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400"
                 >
@@ -843,7 +1147,19 @@ export default function AdminConsole() {
                   <div>{assignResult.error}</div>
                 ) : (
                   <div>
-                    <strong>Assignment Result:</strong> Successfully assigned {assignResult.assigned_count} students. (Failed / Skipped: {assignResult.failed_count})
+                    <div className="font-medium">
+                      Successfully assigned {assignResult.assigned_count} students. (Failed / Skipped: {assignResult.failed_count})
+                    </div>
+                    {assignResult.failures && assignResult.failures.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-rose-800/40 text-[11px] text-rose-300 space-y-1">
+                        <div className="font-semibold text-rose-200">Rejections / Disqualifications:</div>
+                        {assignResult.failures.map((f, i) => (
+                          <div key={i} className="font-mono">
+                            • {f.registration_number}: <span className="text-slate-300">{f.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -862,36 +1178,53 @@ export default function AdminConsole() {
                       <th className="p-3 w-10"></th>
                       <th className="p-3">S.No</th>
                       <th className="p-3">Reg. Number</th>
+                      <th className="p-3">Student Name</th>
                       <th className="p-3">Student Email</th>
+                      <th className="p-3">Dept & Cohort</th>
                       <th className="p-3">Sec</th>
-                      <th className="p-3">Status</th>
+                      <th className="p-3">Eligibility Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
                     {candidates.map((c) => {
                       const isSelected = selectedRegs.includes(c.registration_number);
+                      const isAssignable = !c.already_assigned && c.is_eligible !== false;
                       return (
                         <tr
                           key={c.registration_number}
-                          className={`hover:bg-slate-800/40 transition ${c.already_assigned ? 'opacity-60 bg-slate-950/40' : ''}`}
+                          className={`hover:bg-slate-800/40 transition ${
+                            c.already_assigned
+                              ? 'opacity-60 bg-slate-950/40'
+                              : c.is_eligible === false
+                              ? 'bg-rose-950/20 text-rose-300'
+                              : ''
+                          }`}
                         >
                           <td className="p-3">
                             <input
                               type="checkbox"
-                              disabled={c.already_assigned}
+                              disabled={!isAssignable}
                               checked={isSelected}
                               onChange={() => toggleSelectReg(c.registration_number)}
-                              className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0"
+                              className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 disabled:opacity-40"
                             />
                           </td>
                           <td className="p-3 font-mono text-slate-400">{c.s_no}</td>
                           <td className="p-3 font-mono font-medium text-white">{c.registration_number}</td>
+                          <td className="p-3 text-slate-200">{c.student_name || '—'}</td>
                           <td className="p-3 text-slate-300">{c.email}</td>
+                          <td className="p-3 text-slate-400 font-mono text-[11px]">
+                            {c.department || '—'} • {c.batch_cohort || '—'}
+                          </td>
                           <td className="p-3 text-slate-400">{c.section}</td>
                           <td className="p-3">
                             {c.already_assigned ? (
                               <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700">
                                 Assigned
+                              </span>
+                            ) : c.is_eligible === false ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-rose-950/80 text-rose-400 border border-rose-800/50">
+                                Ineligible
                               </span>
                             ) : (
                               <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950/80 text-emerald-400 border border-emerald-800/50">
@@ -915,19 +1248,112 @@ export default function AdminConsole() {
 
               <div className="flex items-center space-x-3">
                 <button
+                  type="button"
                   onClick={() => setShowAssignModal(false)}
                   className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition"
                 >
                   Close
                 </button>
                 <button
-                  onClick={handleExecuteAssignment}
-                  disabled={assignSubmitting || selectedRegs.length === 0}
+                  type="button"
+                  onClick={handleOpenAssignConfirmation}
+                  disabled={selectedRegs.length === 0}
                   className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium transition flex items-center space-x-2"
                 >
-                  {assignSubmitting ? 'Assigning...' : `Assign Selected (${selectedRegs.length})`}
+                  <UserCheck className="w-4 h-4" />
+                  <span>Review & Assign ({selectedRegs.length})</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ASSIGNMENT CONFIRMATION PREVIEW MODAL */}
+      {showAssignConfirmModal && assignInterview && (
+        <div className="fixed inset-0 z-[60] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative max-h-[85vh] flex flex-col">
+            <button
+              onClick={() => setShowAssignConfirmModal(false)}
+              className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 transition"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <h3 className="text-lg font-bold text-white mb-1">Confirm Student Assignment</h3>
+            <p className="text-xs text-slate-400 mb-4">
+              Please review the target interview and the list of selected students before executing assignment.
+            </p>
+
+            <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 mb-4 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Target Interview:</span>
+                <span className="font-semibold text-white">{assignInterview.title}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Target Department & Cohort:</span>
+                <span className="text-indigo-300 font-mono">{assignInterview.target_department} • {assignInterview.target_cohort}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Question Set:</span>
+                <span className="text-violet-300 font-medium">{assignInterview.question_set_name || 'Default Platform Adaptive AI Pool'}</span>
+              </div>
+              <div className="flex justify-between border-t border-slate-800/80 pt-2">
+                <span className="text-slate-400">Total Confirmed Students:</span>
+                <span className="font-bold text-emerald-400 font-mono text-sm">{selectedRegs.length} Student(s)</span>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto border border-slate-800 rounded-xl mb-4 p-2 bg-slate-950/60 max-h-56">
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 px-2">
+                Selected Candidates To Assign:
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {selectedRegs.map((reg) => {
+                  const student = candidates.find((c) => c.registration_number === reg);
+                  return (
+                    <div key={reg} className="p-2 rounded-lg bg-slate-900 border border-slate-800/80 text-xs flex items-center justify-between">
+                      <div>
+                        <div className="font-mono font-medium text-white">{reg}</div>
+                        {student?.student_name && (
+                          <div className="text-[11px] text-slate-400 truncate max-w-[150px]">{student.student_name}</div>
+                        )}
+                      </div>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/50">
+                        Sec {student?.section || '—'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowAssignConfirmModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition"
+              >
+                Back to Selection
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteAssignment}
+                disabled={assignSubmitting}
+                className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold transition flex items-center space-x-2"
+              >
+                {assignSubmitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Assigning Candidates...</span>
+                  </>
+                ) : (
+                  <>
+                    <UserCheck className="w-4 h-4" />
+                    <span>Confirm & Assign {selectedRegs.length} Student(s)</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

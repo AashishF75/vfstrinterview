@@ -1,5 +1,6 @@
 import logging
 import uuid
+import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
@@ -22,7 +23,8 @@ from app.models.interview import (
     AssignmentStatus,
     utc_now,
 )
-from app.models.user import UserInDB
+from app.models.user import UserInDB, UserRole
+from app.services.question_bank_service import QuestionBankService
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,14 @@ class InterviewService:
         now = utc_now()
         interview_id = str(uuid.uuid4())
 
+        # Revalidate question set access if selected
+        if data.question_set_id:
+            await QuestionBankService.validate_question_set_access(
+                db=db,
+                set_id=data.question_set_id,
+                current_user=creator,
+            )
+
         doc = {
             "interview_id": interview_id,
             "title": data.title.strip(),
@@ -55,12 +65,14 @@ class InterviewService:
             "created_by_email": str(creator.email),
             "target_cohort": data.target_cohort,
             "target_department": data.target_department,
+            "question_set_id": data.question_set_id,
+            "question_set_name": data.question_set_name,
             "created_at": now,
             "updated_at": now,
         }
 
         await db[INTERVIEWS_COLLECTION].insert_one(doc)
-        logger.info(f"Created interview '{interview_id}' by {creator.email}")
+        logger.info(f"Created interview '{interview_id}' by {creator.email} (question_set: {data.question_set_id})")
 
         return UniversityInterviewResponse(
             **doc,
@@ -198,29 +210,62 @@ class InterviewService:
         db: AsyncIOMotorDatabase,
         interview_id: Optional[str] = None,
         section: Optional[str] = None,
+        department: Optional[str] = None,
+        batch_cohort: Optional[str] = None,
+        eligibility: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = 300,
+        current_admin: Optional[UserInDB] = None,
     ) -> List[CandidateSummaryResponse]:
         """
-        Searches candidates strictly from interview_eligibility_registry matching:
-        - review_status == 'approved'
-        - interview_eligible == True
-        Optionally flags whether the candidate is already assigned to interview_id.
+        Searches candidates from interview_eligibility_registry with multi-tenant scoping:
+        - Filters by section, department, cohort, and eligibility status.
+        - Restricts non-platform administrators to their institution and department.
+        - Searches across registration_number, student_name, and email.
         """
-        query: Dict[str, Any] = {
-            "review_status": "approved",
-            "interview_eligible": True,
-        }
+        query: Dict[str, Any] = {}
+
+        # Eligibility filter
+        clean_elig = (eligibility or "eligible").strip().lower()
+        if clean_elig == "eligible":
+            query["review_status"] = "approved"
+            query["interview_eligible"] = True
+        elif clean_elig == "ineligible":
+            query["$or"] = [
+                {"review_status": {"$ne": "approved"}},
+                {"interview_eligible": False},
+            ]
+        # if "all", no review_status / interview_eligible restriction
+
+        # Multi-tenant institutional scoping
+        if current_admin and current_admin.role != UserRole.PLATFORM_ADMIN:
+            inst = (current_admin.institution_id or "VFSTR").strip().upper()
+            query["institution_id"] = inst
+            if current_admin.role == UserRole.DEPARTMENT_ADMIN and current_admin.department:
+                query["department"] = current_admin.department
 
         if section and section.strip() and section.strip().upper() not in ["ALL", ""]:
             query["section"] = section.strip()
 
+        if department and department.strip() and department.strip().upper() not in ["ALL", ""]:
+            query["department"] = department.strip()
+
+        if batch_cohort and batch_cohort.strip() and batch_cohort.strip().upper() not in ["ALL", ""]:
+            query["batch_cohort"] = batch_cohort.strip()
+
         if search and search.strip():
             term = search.strip()
-            query["$or"] = [
-                {"registration_number": {"$regex": term, "$options": "i"}},
-                {"email": {"$regex": term, "$options": "i"}},
+            regex_clause = {"$regex": re.escape(term), "$options": "i"}
+            search_clause = [
+                {"registration_number": regex_clause},
+                {"student_name": regex_clause},
+                {"student_name_raw": regex_clause},
+                {"email": regex_clause},
             ]
+            if "$or" in query:
+                query["$and"] = [{"$or": query.pop("$or")}, {"$or": search_clause}]
+            else:
+                query["$or"] = search_clause
 
         cursor = db[ELIGIBILITY_COLLECTION].find(
             query,
@@ -228,11 +273,15 @@ class InterviewService:
                 "_id": 0,
                 "s_no": 1,
                 "registration_number": 1,
+                "student_name": 1,
+                "student_name_raw": 1,
                 "email": 1,
                 "section": 1,
                 "review_status": 1,
                 "interview_eligible": 1,
                 "batch_cohort": 1,
+                "department": 1,
+                "institution_id": 1,
             },
         ).sort("s_no", pymongo.ASCENDING).limit(limit)
 
@@ -255,11 +304,14 @@ class InterviewService:
                 CandidateSummaryResponse(
                     s_no=c.get("s_no", 0),
                     registration_number=reg,
+                    student_name=c.get("student_name") or c.get("student_name_raw") or None,
                     email=c.get("email", ""),
                     section=c.get("section", ""),
                     review_status=c.get("review_status", ""),
-                    interview_eligible=c.get("interview_eligible", True),
+                    interview_eligible=bool(c.get("interview_eligible", True)),
                     batch_cohort=c.get("batch_cohort"),
+                    department=c.get("department"),
+                    institution_id=c.get("institution_id") or "VFSTR",
                     already_assigned=reg in assigned_regs,
                 )
             )
@@ -294,6 +346,12 @@ class InterviewService:
                 detail=f"Cannot assign candidates to an interview with status '{interview['status']}'",
             )
 
+        if not reg_numbers:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No candidate registration numbers provided",
+            )
+
         now = utc_now()
         results: List[CandidateAssignmentResult] = []
         assigned_count = 0
@@ -321,6 +379,34 @@ class InterviewService:
                 )
                 failed_count += 1
                 continue
+
+            # 1b. Multi-tenant institutional isolation check
+            user_inst = (assigner.institution_id or "VFSTR").strip().upper()
+            student_inst = (reg_doc.get("institution_id") or "VFSTR").strip().upper()
+            if assigner.role != UserRole.PLATFORM_ADMIN and student_inst != user_inst:
+                results.append(
+                    CandidateAssignmentResult(
+                        registration_number=reg,
+                        success=False,
+                        reason=f"CROSS_INSTITUTION_UNAUTHORIZED: Student belongs to '{student_inst}', not authorized for '{user_inst}'",
+                    )
+                )
+                failed_count += 1
+                continue
+
+            # 1c. Department-scoping check for department_admin
+            if assigner.role == UserRole.DEPARTMENT_ADMIN and assigner.department:
+                student_dept = reg_doc.get("department")
+                if student_dept and student_dept.strip().upper() != assigner.department.strip().upper():
+                    results.append(
+                        CandidateAssignmentResult(
+                            registration_number=reg,
+                            success=False,
+                            reason=f"DEPARTMENT_MISMATCH: Student belongs to '{student_dept}', not authorized for department '{assigner.department}'",
+                        )
+                    )
+                    failed_count += 1
+                    continue
 
             # 2. Check approval and eligibility
             if reg_doc.get("review_status") != "approved" or not reg_doc.get("interview_eligible"):

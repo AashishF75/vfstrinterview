@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.database import get_interview_database
@@ -21,9 +21,18 @@ from app.models.performance_tracking import (
     StudentPerformanceSummaryResponse,
     PaginatedStudentTrackingResponse,
 )
+from app.models.question_bank import (
+    QuestionExtractionPreviewResponse,
+    QuestionBatchSaveRequest,
+    QuestionBatchSaveResponse,
+    QuestionBankListResponse,
+    QuestionSetListResponse,
+    QuestionSetPreviewResponse,
+)
 from app.services.interview_service import InterviewService
 from app.services.proctoring_service import ProctoringService
 from app.services.interview_recommendation_service import InterviewRecommendationService
+from app.services.question_bank_service import QuestionBankService
 
 router = APIRouter()
 
@@ -72,7 +81,10 @@ async def list_interviews(
 async def search_candidates(
     interview_id: Optional[str] = Query(None, description="Optional interview ID to check assignment status"),
     section: Optional[str] = Query(None, description="Filter by section (e.g. '1', '2')"),
-    search: Optional[str] = Query(None, description="Filter by roll number or email"),
+    department: Optional[str] = Query(None, description="Filter by department (e.g. 'CSE')"),
+    batch_cohort: Optional[str] = Query(None, description="Filter by batch cohort (e.g. '2024-2028')"),
+    eligibility: Optional[str] = Query(None, description="Filter by eligibility ('all', 'eligible', 'ineligible')"),
+    search: Optional[str] = Query(None, description="Filter by roll number, student name, or email"),
     limit: int = Query(300, ge=1, le=1000),
     current_admin: UserInDB = Depends(admin_required),
     db: AsyncIOMotorDatabase = Depends(get_interview_database),
@@ -87,7 +99,138 @@ async def search_candidates(
         db=db,
         interview_id=interview_id,
         section=section,
+        department=department,
+        batch_cohort=batch_cohort,
+        eligibility=eligibility,
         search=search,
+        limit=limit,
+        current_admin=current_admin,
+    )
+
+# ==============================================================================
+# Institution Question Bank Management APIs (Faculty & Administration)
+# ==============================================================================
+
+@router.post("/questions/preview", response_model=QuestionExtractionPreviewResponse)
+async def preview_question_file(
+    file: UploadFile = File(...),
+    default_topic: str = Form("Technical Assessment"),
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
+):
+    """
+    Parses an uploaded question file (PDF, CSV, JSON, TXT, MD, ZIP) and generates
+    an extraction preview for faculty review, inline editing, and validation.
+    Does NOT save to database and does NOT schedule interviews.
+    """
+    MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Question file exceeds maximum permitted size of 15 MB (received {len(content) / (1024*1024):.1f} MB)",
+        )
+
+    return QuestionBankService.preview_uploaded_file(
+        file_bytes=content,
+        filename=file.filename or "uploaded_questions.pdf",
+        default_topic=default_topic,
+    )
+
+
+@router.post("/questions/save", response_model=QuestionBatchSaveResponse)
+async def save_confirmed_questions(
+    data: QuestionBatchSaveRequest,
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Commits confirmed questions into the institution-scoped question bank.
+    Enforces multi-tenant institutional isolation boundaries.
+    Does NOT auto-assign candidates or schedule interviews.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await QuestionBankService.save_confirmed_questions(
+        db=db,
+        data=data,
+        current_user=current_reviewer,
+    )
+
+
+@router.get("/questions", response_model=QuestionBankListResponse)
+async def list_institution_questions(
+    role: Optional[str] = Query(None),
+    topic: Optional[str] = Query(None),
+    difficulty: Optional[str] = Query(None),
+    interview_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Lists stored questions accessible within the authenticated reviewer's institutional scope.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await QuestionBankService.list_questions(
+        db=db,
+        current_user=current_reviewer,
+        role=role,
+        topic=topic,
+        difficulty=difficulty,
+        interview_id=interview_id,
+        search=search,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get("/question-sets", response_model=QuestionSetListResponse)
+async def list_question_sets(
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Lists platform and institution question sets accessible to the reviewer.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await QuestionBankService.list_question_sets(
+        db=db,
+        current_user=current_reviewer,
+    )
+
+
+@router.get("/question-sets/{set_id}/preview", response_model=QuestionSetPreviewResponse)
+async def preview_question_set(
+    set_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Retrieves preview metadata and sample questions for a selected question set.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await QuestionBankService.preview_question_set(
+        db=db,
+        set_id=set_id,
+        current_user=current_reviewer,
         limit=limit,
     )
 
