@@ -17,13 +17,26 @@ from app.models.proctoring import (
     ProctoringTimelineResponse,
     UpdateProctoringReviewRequest,
 )
+from app.models.performance_tracking import (
+    StudentPerformanceSummaryResponse,
+    PaginatedStudentTrackingResponse,
+)
 from app.services.interview_service import InterviewService
 from app.services.proctoring_service import ProctoringService
+from app.services.interview_recommendation_service import InterviewRecommendationService
 
 router = APIRouter()
 
-# Strict RBAC guard: only university_admin and platform_admin can access these administration routes
-admin_required = require_roles([UserRole.UNIVERSITY_ADMIN, UserRole.PLATFORM_ADMIN])
+# Strict RBAC guard: platform_admin, university_admin, and department_admin can manage interviews
+admin_required = require_roles([UserRole.PLATFORM_ADMIN, UserRole.UNIVERSITY_ADMIN, UserRole.DEPARTMENT_ADMIN])
+
+# Extended RBAC guard: administrators and placement faculty can review proctoring timelines and integrity decisions
+proctoring_reviewer_required = require_roles([
+    UserRole.PLATFORM_ADMIN,
+    UserRole.UNIVERSITY_ADMIN,
+    UserRole.DEPARTMENT_ADMIN,
+    UserRole.FACULTY,
+])
 
 
 @router.post("", response_model=UniversityInterviewResponse, status_code=status.HTTP_201_CREATED)
@@ -185,4 +198,64 @@ async def update_session_proctoring_review(
         review_status=data.review_status,
         review_notes=data.review_notes,
         admin_user=current_admin,
+    )
+
+
+# ==============================================================================
+# Student Performance Tracking & Level Recommendation APIs (Faculty & Admin)
+# ==============================================================================
+
+@router.get("/students/tracking", response_model=PaginatedStudentTrackingResponse)
+async def list_students_performance_tracking(
+    department: Optional[str] = Query(None),
+    batch_cohort: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    recommended_level: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Retrieves paginated student performance tracking and personalized level recommendations
+    within the authenticated administrator's or faculty member's institutional scope.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewRecommendationService.get_faculty_student_tracking(
+        db=db,
+        current_reviewer=current_reviewer,
+        department=department,
+        batch_cohort=batch_cohort,
+        role=role,
+        recommended_level=recommended_level,
+        search=search,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get("/students/{registration_number}/progress", response_model=StudentPerformanceSummaryResponse)
+async def get_student_performance_progress(
+    registration_number: str,
+    current_reviewer: UserInDB = Depends(proctoring_reviewer_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Retrieves an authorized student's detailed progress summary, topic mastery,
+    and level recommendation within institutional multi-tenant bounds.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewRecommendationService.get_student_performance_summary(
+        db=db,
+        current_user=current_reviewer,
+        target_registration_number=registration_number,
     )

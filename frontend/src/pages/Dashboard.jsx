@@ -11,6 +11,7 @@ import {
   getAvailableJobRoles,
   selectStudentJobRole,
 } from '../api/client';
+import StudentPerformanceDashboard from '../components/StudentPerformanceDashboard';
 import {
   User,
   Shield,
@@ -407,6 +408,14 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+
+        {/* STUDENT PERFORMANCE TRACKING & PERSONALIZED LEVEL RECOMMENDATION */}
+        {user?.role === 'student' && (
+          <StudentPerformanceDashboard
+            user={user}
+            onStartInterview={handleStartRoleInterview}
+          />
+        )}
 
         {/* ROLE SELECTION & SELF-ENROLLMENT SECTION */}
         {user?.role === 'student' && (

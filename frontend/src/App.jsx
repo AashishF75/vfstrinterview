@@ -555,7 +555,7 @@ export default function App() {
       <Route
         path="/admin"
         element={
-          <ProtectedRoute allowedRoles={['platform_admin', 'university_admin', 'department_admin']}>
+          <ProtectedRoute allowedRoles={['platform_admin', 'university_admin', 'department_admin', 'faculty']}>
             <AdminConsole />
           </ProtectedRoute>
         }

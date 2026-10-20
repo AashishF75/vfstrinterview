@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 import uuid
 import pymongo
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
@@ -19,8 +19,15 @@ from app.models.interview_session import (
     UpdateVideoWatchStatusRequest,
     UpdateVideoWatchStatusResponse,
 )
+from app.models.performance_tracking import (
+    StudentPerformanceSummaryResponse,
+    PaginatedInterviewHistoryResponse,
+    StudentProfileUpdate,
+    StudentProfileInfo,
+)
 from app.services.interview_session_service import _ensure_utc, InterviewSessionService
 from app.services.interview_service import InterviewService
+from app.services.interview_recommendation_service import InterviewRecommendationService
 
 router = APIRouter()
 
@@ -453,4 +460,73 @@ async def select_job_role_and_create_assignment(
         status=AssignmentStatus.ACCEPTED,
         assigned_at=now,
         accepted_at=now,
+    )
+
+
+# ==============================================================================
+# Student Performance Tracking & Level Recommendation APIs
+# ==============================================================================
+
+@router.get("/progress/summary", response_model=StudentPerformanceSummaryResponse)
+async def get_my_performance_progress_summary(
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Retrieves the authenticated student's persistent performance tracking summary,
+    topic-level mastery, score trend, and personalized interview level recommendation.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewRecommendationService.get_student_performance_summary(
+        db=db,
+        current_user=current_student,
+    )
+
+
+@router.get("/progress/history", response_model=PaginatedInterviewHistoryResponse)
+async def get_my_interview_history(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Retrieves paginated completed interview history for the authenticated student.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewRecommendationService.get_student_interview_history(
+        db=db,
+        current_user=current_student,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.patch("/profile", response_model=StudentProfileInfo)
+async def update_my_student_profile(
+    payload: StudentProfileUpdate,
+    current_student: UserInDB = Depends(student_required),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Updates the student's optional profile fields (target job role, skills, preferred languages).
+    Preserves institutional registration records.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    return await InterviewRecommendationService.update_student_profile(
+        db=db,
+        current_user=current_student,
+        payload=payload,
     )

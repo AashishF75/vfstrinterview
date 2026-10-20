@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // Create configured Axios instance
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '',
+  baseURL: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) || '',
   timeout: 25000,
   headers: {
     'Content-Type': 'application/json',
@@ -507,6 +507,92 @@ export const selectStudentJobRole = async (role) => {
     return {
       success: false,
       error: error.response?.data?.detail || error.message || 'Failed to initialize role interview',
+      status: error.response?.status,
+    };
+  }
+};
+
+// ==========================================
+// Student Performance Tracking & Level Recommendation APIs
+// ==========================================
+
+export const getStudentProgressSummary = async () => {
+  try {
+    const response = await apiClient.get('/api/student/interviews/progress/summary');
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch student progress summary',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const getStudentInterviewHistory = async (skip = 0, limit = 20) => {
+  try {
+    const response = await apiClient.get(`/api/student/interviews/progress/history?skip=${skip}&limit=${limit}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch interview history',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const updateStudentProfile = async (profileData) => {
+  try {
+    const response = await apiClient.patch('/api/student/interviews/profile', profileData);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to update student profile',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const getAdminStudentTracking = async ({
+  department,
+  batch_cohort,
+  role,
+  recommended_level,
+  search,
+  skip = 0,
+  limit = 20,
+} = {}) => {
+  try {
+    const params = new URLSearchParams();
+    if (department && department !== 'ALL') params.append('department', department);
+    if (batch_cohort && batch_cohort !== 'ALL') params.append('batch_cohort', batch_cohort);
+    if (role && role !== 'ALL') params.append('role', role);
+    if (recommended_level && recommended_level !== 'ALL') params.append('recommended_level', recommended_level);
+    if (search && search.trim()) params.append('search', search.trim());
+    params.append('skip', skip.toString());
+    params.append('limit', limit.toString());
+
+    const response = await apiClient.get(`/api/admin/interviews/students/tracking?${params.toString()}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch student tracking data',
+      status: error.response?.status,
+    };
+  }
+};
+
+export const getAdminStudentDetail = async (registrationNumber) => {
+  try {
+    const response = await apiClient.get(`/api/admin/interviews/students/${encodeURIComponent(registrationNumber)}/progress`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to fetch student progress detail',
       status: error.response?.status,
     };
   }

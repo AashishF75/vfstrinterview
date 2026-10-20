@@ -238,6 +238,41 @@ async def ensure_interview_indexes(db: Optional[AsyncIOMotorDatabase] = None):
             unique=True,
             name="unique_session_scorecard"
         )
+        await scorecards_col.create_index(
+            [("student_registration_number", pymongo.ASCENDING)],
+            name="idx_scorecard_student_reg"
+        )
+        await scorecards_col.create_index(
+            [("student_registration_number", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)],
+            name="idx_scorecard_student_created"
+        )
+
+        # student_profiles indexes
+        profiles_col = target_db["student_profiles"]
+        try:
+            profile_indexes = await profiles_col.index_information()
+        except Exception:
+            profile_indexes = {}
+
+        existing_reg_idx = profile_indexes.get("unique_student_profile_reg")
+        if existing_reg_idx:
+            partial_expr = existing_reg_idx.get("partialFilterExpression")
+            if partial_expr != {"registration_number": {"$type": "string"}}:
+                logger.warning(
+                    "Index 'unique_student_profile_reg' already exists with differing options (%s). "
+                    "Skipping automatic index update to avoid index conflict or downtime. "
+                    "Manual migration required in production if non-partial index is present.",
+                    partial_expr,
+                )
+            else:
+                logger.info("Index 'unique_student_profile_reg' verified with partialFilterExpression.")
+        else:
+            await profiles_col.create_index(
+                [("registration_number", pymongo.ASCENDING)],
+                unique=True,
+                partialFilterExpression={"registration_number": {"$type": "string"}},
+                name="unique_student_profile_reg",
+            )
         # proctoring_events indexes
         proctoring_col = target_db["proctoring_events"]
         await proctoring_col.create_index(
