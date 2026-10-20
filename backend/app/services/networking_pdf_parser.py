@@ -150,8 +150,26 @@ class NetworkingAssessmentParser:
 
         for page_idx, page in enumerate(reader.pages):
             page_num = page_idx + 1
-            text = page.extract_text()
-            lines = [line.strip() for line in text.split("\n") if line.strip()]
+
+            # Group text fragments by vertical rendering coordinate (Y) and horizontal position (X)
+            y_groups: Dict[float, List[Tuple[float, str]]] = {}
+
+            def _visitor(t: str, cm: Any, tm: Any, fd: Any, fs: Any) -> None:
+                if t and t.strip():
+                    x = round(tm[4], 1)
+                    y = round(tm[5], 1)
+                    y_groups.setdefault(y, []).append((x, t.strip()))
+
+            page.extract_text(visitor_text=_visitor)
+
+            if y_groups:
+                lines = [
+                    " ".join(text for _, text in sorted(y_groups[y], key=lambda item: item[0]))
+                    for y in sorted(y_groups.keys())
+                ]
+            else:
+                text = page.extract_text() or ""
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
 
             row_on_page = 0
             page_records_count = 0
