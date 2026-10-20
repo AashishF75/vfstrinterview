@@ -1,4 +1,5 @@
 import logging
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -13,6 +14,8 @@ from app.models.interview_session import (
     SubmitAnswerResponse,
     ScorecardResponse,
     StudentPerformanceReportResponse,
+    UpdateVideoWatchStatusRequest,
+    UpdateVideoWatchStatusResponse,
 )
 from app.models.voice import (
     VoiceSpeakRequest,
@@ -258,6 +261,37 @@ async def get_session_performance_report(
         session_id=session_id,
         user=current_user,
     )
+
+
+@router.patch(
+    "/sessions/{session_id}/videos/{resource_id}/watch",
+    response_model=UpdateVideoWatchStatusResponse,
+)
+async def update_session_video_watch_status(
+    session_id: str,
+    resource_id: str,
+    payload: Optional[UpdateVideoWatchStatusRequest] = None,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Student-authorized action to mark or unmark a recommended video as watched using session_id:
+    - Resolves the parent assignment and delegates to InterviewSessionService.update_video_watch_status_by_session.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    watched = payload.watched if payload is not None else True
+    return await InterviewSessionService.update_video_watch_status_by_session(
+        db=db,
+        session_id=session_id,
+        resource_id=resource_id,
+        watched=watched,
+        user=current_user,
+    )
+
 
 
 @router.post(

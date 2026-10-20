@@ -293,3 +293,19 @@ class StudentPerformanceReportResponse(BaseModel):
     disclaimer: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UpdateVideoWatchStatusRequest(BaseModel):
+    watched: bool = True
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UpdateVideoWatchStatusResponse(BaseModel):
+    assignment_id: str
+    resource_id: str
+    watched: bool
+    marked_at: datetime
+    message: str
+
+    model_config = ConfigDict(from_attributes=True)

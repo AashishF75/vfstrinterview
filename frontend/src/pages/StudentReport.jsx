@@ -25,7 +25,7 @@ import {
   TrendingUp,
   Target
 } from 'lucide-react';
-import { getStudentPerformanceReport, getSessionPerformanceReport } from '../api/client';
+import { getStudentPerformanceReport, getSessionPerformanceReport, updateVideoWatchStatus } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import EmbeddedVideoPlayer from '../components/EmbeddedVideoPlayer';
 
@@ -37,6 +37,52 @@ export default function StudentReport() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [updatingWatchIds, setUpdatingWatchIds] = useState(new Set());
+  const [watchUpdateErrors, setWatchUpdateErrors] = useState({});
+
+  const handleToggleWatchStatus = async (resourceId, currentWatched) => {
+    if (!resourceId) return;
+    setUpdatingWatchIds((prev) => new Set(prev).add(resourceId));
+    setWatchUpdateErrors((prev) => {
+      const next = { ...prev };
+      delete next[resourceId];
+      return next;
+    });
+
+    const targetId = report?.assignment_id || assignmentId;
+    const newWatched = !currentWatched;
+
+    try {
+      const res = await updateVideoWatchStatus(targetId, resourceId, newWatched);
+      if (res.success) {
+        setReport((prev) => {
+          if (!prev || !prev.video_recommendations) return prev;
+          return {
+            ...prev,
+            video_recommendations: prev.video_recommendations.map((v) =>
+              v.resource_id === resourceId ? { ...v, watched: newWatched } : v
+            ),
+          };
+        });
+      } else {
+        setWatchUpdateErrors((prev) => ({
+          ...prev,
+          [resourceId]: res.error || 'Failed to update watch status',
+        }));
+      }
+    } catch (err) {
+      setWatchUpdateErrors((prev) => ({
+        ...prev,
+        [resourceId]: err.message || 'Error communicating with server',
+      }));
+    } finally {
+      setUpdatingWatchIds((prev) => {
+        const next = new Set(prev);
+        next.delete(resourceId);
+        return next;
+      });
+    }
+  };
 
   const fetchReport = useCallback(async () => {
     if (!assignmentId) {
@@ -603,9 +649,22 @@ export default function StudentReport() {
                 >
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                        {vid.topic}
-                      </span>
+                      <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                          {vid.topic}
+                        </span>
+                        {vid.watched ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400 mr-1" />
+                            <span>Watched</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">
+                            <Clock className="w-3 h-3 text-slate-500 mr-1" />
+                            <span>To Review</span>
+                          </span>
+                        )}
+                      </div>
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
                         <ShieldCheck className="w-3 h-3 text-emerald-400 mr-1" />
                         <span>Verified Resource</span>
@@ -641,21 +700,63 @@ export default function StudentReport() {
                     </div>
                   </div>
 
-                  <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
-                    <span className="text-slate-500 font-mono">
-                      Status: <strong className="text-slate-400 font-normal">Personalized Recommendation</strong>
-                    </span>
+                  <div className="pt-3 border-t border-slate-800/80 space-y-2">
+                    {watchUpdateErrors[vid.resource_id] && (
+                      <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300 flex items-center justify-between">
+                        <span>{watchUpdateErrors[vid.resource_id]}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleWatchStatus(vid.resource_id, vid.watched)}
+                          className="text-[10px] underline font-semibold hover:text-white cursor-pointer"
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
 
-                    <a
-                      href={vid.video_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 font-medium transition print:hidden"
-                      title="Open tutorial on YouTube"
-                    >
-                      <span>External Link</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                    <div className="flex items-center justify-between text-[11px] flex-wrap gap-2">
+                      <div className="flex items-center space-x-2 print:hidden">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleWatchStatus(vid.resource_id, vid.watched)}
+                          disabled={updatingWatchIds.has(vid.resource_id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition border focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 cursor-pointer ${
+                            vid.watched
+                              ? 'bg-slate-800/90 hover:bg-slate-750 text-slate-300 border-slate-700'
+                              : 'bg-emerald-600/90 hover:bg-emerald-500 text-white border-emerald-500/40 shadow-sm shadow-emerald-600/20'
+                          }`}
+                          aria-label={vid.watched ? `Mark ${vid.title} as unwatched` : `Mark ${vid.title} as watched`}
+                        >
+                          {updatingWatchIds.has(vid.resource_id) ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Updating...</span>
+                            </>
+                          ) : vid.watched ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Mark as Unwatched</span>
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Mark as Watched</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      <a
+                        href={vid.video_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 font-medium transition print:hidden"
+                        title="Open tutorial on YouTube"
+                      >
+                        <span>External Link</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
                   </div>
                 </div>
               ))

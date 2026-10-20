@@ -1228,3 +1228,284 @@ def test_acronym_matching_collision_protection():
     db_resource = next(r for r in VERIFIED_LEARNING_RESOURCES if r["resource_id"] == "res-db-sql-01")
     assert _matches_topic(db_resource, "SQL") is True
     assert _matches_topic(db_resource, "sql") is True
+
+
+# ==============================================================================
+# Phase 3: Persistent Video Watch Tracking Tests
+# ==============================================================================
+
+@pytest.mark.anyio
+async def test_student_can_mark_video_watched_and_persists():
+    """
+    Phase 3 test:
+    Verifies that an authorized student can mark a recommended video as watched,
+    and update_one is invoked with $addToSet on the assignment document.
+    """
+    assignment_id = "asgn-watch-001"
+    student = make_user("u-watch-1", "student1@vfstr.ac.in", UserRole.STUDENT, reg_no="241FA04001")
+
+    assignment_doc = {
+        "assignment_id": assignment_id,
+        "interview_id": "int-watch-01",
+        "student_registration_number": "241FA04001",
+        "student_email": student.email,
+        "selected_role": "Software Development Engineer",
+        "status": AssignmentStatus.COMPLETED.value,
+        "watched_video_resource_ids": [],
+    }
+
+    mock_db = MagicMock()
+    mock_assignments = AsyncMock()
+    mock_db.__getitem__.side_effect = lambda name: {
+        "student_interview_assignments": mock_assignments,
+    }[name]
+
+    mock_assignments.find_one.return_value = assignment_doc
+
+    res = await InterviewSessionService.update_video_watch_status(
+        db=mock_db,
+        assignment_id=assignment_id,
+        resource_id="res-net-osi-01",
+        watched=True,
+        user=student,
+    )
+
+    assert res.assignment_id == assignment_id
+    assert res.resource_id == "res-net-osi-01"
+    assert res.watched is True
+    assert "marked as watched" in res.message.lower()
+
+    # Verify update_one was called with $addToSet
+    mock_assignments.update_one.assert_called_once()
+    call_args = mock_assignments.update_one.call_args[0]
+    assert call_args[0] == {"assignment_id": assignment_id}
+    assert "$addToSet" in call_args[1]
+    assert call_args[1]["$addToSet"]["watched_video_resource_ids"] == "res-net-osi-01"
+
+
+@pytest.mark.anyio
+async def test_student_can_unmark_video_watched():
+    """
+    Phase 3 test:
+    Verifies that a student can unmark a video as watched (watched=False) using $pull.
+    """
+    assignment_id = "asgn-watch-002"
+    student = make_user("u-watch-2", "student2@vfstr.ac.in", UserRole.STUDENT, reg_no="241FA04002")
+
+    assignment_doc = {
+        "assignment_id": assignment_id,
+        "student_registration_number": "241FA04002",
+        "status": AssignmentStatus.COMPLETED.value,
+        "watched_video_resource_ids": ["res-net-osi-01"],
+    }
+
+    mock_db = MagicMock()
+    mock_assignments = AsyncMock()
+    mock_db.__getitem__.side_effect = lambda name: {
+        "student_interview_assignments": mock_assignments,
+    }[name]
+
+    mock_assignments.find_one.return_value = assignment_doc
+
+    res = await InterviewSessionService.update_video_watch_status(
+        db=mock_db,
+        assignment_id=assignment_id,
+        resource_id="res-net-osi-01",
+        watched=False,
+        user=student,
+    )
+
+    assert res.watched is False
+    assert "marked as unwatched" in res.message.lower()
+    call_args = mock_assignments.update_one.call_args[0]
+    assert "$pull" in call_args[1]
+    assert call_args[1]["$pull"]["watched_video_resource_ids"] == "res-net-osi-01"
+
+
+@pytest.mark.anyio
+async def test_cross_student_watch_update_rejected():
+    """
+    Phase 3 test:
+    Verifies tenant barrier: Student B cannot update watch progress on Student A's assignment.
+    """
+    assignment_id = "asgn-watch-003"
+    student_b = make_user("u-watch-b", "studentB@vfstr.ac.in", UserRole.STUDENT, reg_no="241FA04099")
+
+    assignment_doc = {
+        "assignment_id": assignment_id,
+        "student_registration_number": "241FA04001",  # Belongs to Student A
+        "status": AssignmentStatus.COMPLETED.value,
+    }
+
+    mock_db = MagicMock()
+    mock_assignments = AsyncMock()
+    mock_db.__getitem__.side_effect = lambda name: {
+        "student_interview_assignments": mock_assignments,
+    }[name]
+    mock_assignments.find_one.return_value = assignment_doc
+
+    with pytest.raises(HTTPException) as exc_info:
+        await InterviewSessionService.update_video_watch_status(
+            db=mock_db,
+            assignment_id=assignment_id,
+            resource_id="res-net-osi-01",
+            watched=True,
+            user=student_b,
+        )
+    assert exc_info.value.status_code == 403
+    assert "Access denied" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_invalid_resource_id_rejected():
+    """
+    Phase 3 test:
+    Verifies that attempting to mark an unrecognized or untrusted resource ID is rejected with 400.
+    """
+    assignment_id = "asgn-watch-004"
+    student = make_user("u-watch-4", "student4@vfstr.ac.in", UserRole.STUDENT, reg_no="241FA04004")
+
+    mock_db = MagicMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await InterviewSessionService.update_video_watch_status(
+            db=mock_db,
+            assignment_id=assignment_id,
+            resource_id="malicious_or_unknown_id",
+            watched=True,
+            user=student,
+        )
+    assert exc_info.value.status_code == 400
+    assert "Invalid or unrecognized learning resource" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_watch_status_restoration_in_performance_report():
+    """
+    Phase 3 test:
+    Verifies that when an assignment has watched_video_resource_ids,
+    get_performance_report correctly sets watched=True on matched videos.
+    """
+    now = utc_now()
+    assignment_id = "asgn-watch-rep-005"
+    session_id = "sess-watch-rep-005"
+    student = make_user("u-5", "student5@vfstr.ac.in", UserRole.STUDENT, reg_no="241FA04005")
+
+    mock_db = MagicMock()
+    mock_assignments = AsyncMock()
+    mock_sessions = MagicMock()
+    mock_scorecards = AsyncMock()
+    mock_interviews = AsyncMock()
+    mock_responses = MagicMock()
+
+    mock_db.__getitem__.side_effect = lambda name: {
+        "student_interview_assignments": mock_assignments,
+        "interview_sessions": mock_sessions,
+        "interview_scorecards": mock_scorecards,
+        "university_interviews": mock_interviews,
+        "interview_responses": mock_responses,
+    }[name]
+
+    mock_assignments.find_one.return_value = {
+        "assignment_id": assignment_id,
+        "interview_id": "int-05",
+        "student_registration_number": "241FA04005",
+        "student_email": student.email,
+        "selected_role": "Software Development Engineer",
+        "status": AssignmentStatus.COMPLETED.value,
+        # res-net-osi-01 has been marked watched!
+        "watched_video_resource_ids": ["res-net-osi-01"],
+    }
+
+    mock_sessions.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[{
+        "session_id": session_id,
+        "assignment_id": assignment_id,
+        "interview_id": "int-05",
+        "student_registration_number": "241FA04005",
+        "session_status": SessionStatus.COMPLETED.value,
+        "completed_at": now,
+        "final_scorecard_id": "sc-05",
+    }])
+
+    mock_scorecards.find_one.return_value = {
+        "scorecard_id": "sc-05",
+        "session_id": session_id,
+        "overall_score": 5.0,
+        "percentage_score": 50.0,
+        "performance_level": "Needs Improvement",
+        "summary_feedback": "Review Networking",
+    }
+    mock_interviews.find_one.return_value = {"interview_id": "int-05", "title": "SDE Mock"}
+
+    mock_responses.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[
+        {
+            "response_id": "r1",
+            "question_index": 1,
+            "topic": "Computer Networks",
+            "question_text": "Explain the 7 layers of the OSI model.",
+            "difficulty": "medium",
+            "evaluation_score": 4.0,
+            "answer_text": "OSI has 7 layers.",
+            "is_skipped": False,
+            "status": "evaluated",
+        }
+    ])
+
+    report = await InterviewSessionService.get_performance_report(
+        db=mock_db,
+        assignment_id=assignment_id,
+        user=student,
+    )
+
+    net_vids = [v for v in report.video_recommendations if v.resource_id == "res-net-osi-01"]
+    assert len(net_vids) == 1
+    assert net_vids[0].watched is True
+
+    # Other recommended videos default to False
+    other_vids = [v for v in report.video_recommendations if v.resource_id != "res-net-osi-01"]
+    for v in other_vids:
+        assert v.watched is False
+
+
+def test_api_routes_for_video_watch_status():
+    """
+    Phase 3 test:
+    Validates the FastAPI route:
+    PATCH /api/student/interviews/reports/{assignment_id}/videos/{resource_id}/watch
+    using TestClient.
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.api.deps import get_current_active_user
+    from app.core.database import get_interview_database
+    from unittest.mock import patch
+
+    client = TestClient(app)
+    student = make_user("stu-watch-api", "student_api@vfstr.ac.in", UserRole.STUDENT, reg_no="241FA04001")
+    mock_db = AsyncMock()
+
+    app.dependency_overrides[get_current_active_user] = lambda: student
+    app.dependency_overrides[get_interview_database] = lambda: mock_db
+
+    try:
+        with patch.object(
+            InterviewSessionService,
+            "update_video_watch_status",
+            new=AsyncMock(return_value={
+                "assignment_id": "asgn-api-1",
+                "resource_id": "res-net-osi-01",
+                "watched": True,
+                "marked_at": utc_now(),
+                "message": "Resource 'res-net-osi-01' marked as watched.",
+            })
+        ):
+            res = client.patch(
+                "/api/student/interviews/reports/asgn-api-1/videos/res-net-osi-01/watch",
+                json={"watched": True},
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert data["watched"] is True
+            assert data["resource_id"] == "res-net-osi-01"
+    finally:
+        app.dependency_overrides.clear()

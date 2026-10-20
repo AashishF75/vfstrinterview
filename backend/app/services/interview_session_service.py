@@ -23,6 +23,8 @@ from app.models.interview_session import (
     ActionablePriorityItem,
     VideoRecommendationItem,
     StudentPerformanceReportResponse,
+    UpdateVideoWatchStatusRequest,
+    UpdateVideoWatchStatusResponse,
     utc_now,
 )
 from app.services.learning_resources import match_video_recommendations
@@ -1902,7 +1904,13 @@ class InterviewSessionService:
             responses=raw_responses,
             max_recommendations=4,
         )
-        video_items = [VideoRecommendationItem(**v) for v in matched_videos_raw]
+        watched_resource_ids = set(assignment.get("watched_video_resource_ids") or [])
+        video_items = []
+        for v in matched_videos_raw:
+            v_dict = dict(v)
+            if v_dict.get("resource_id") in watched_resource_ids:
+                v_dict["watched"] = True
+            video_items.append(VideoRecommendationItem(**v_dict))
 
         completed_timestamp = session.get("completed_at", session.get("updated_at", utc_now()))
 
@@ -1964,4 +1972,139 @@ class InterviewSessionService:
             assignment_id=session["assignment_id"],
             user=user,
             target_session_id=session_id,
+        )
+
+    @staticmethod
+    async def update_video_watch_status(
+        db: AsyncIOMotorDatabase,
+        assignment_id: str,
+        resource_id: str,
+        watched: bool,
+        user: UserInDB,
+    ) -> UpdateVideoWatchStatusResponse:
+        """
+        Updates student watch progress for a recommended video:
+        - Enforces student ownership barrier (only the assigned student can update their progress).
+        - Validates resource_id against the verified educational resource catalog.
+        - Idempotently marks or unmarks the resource as watched in the assignment document.
+        - Records timestamped audit metadata separate from interview scores and evaluations.
+        """
+        from app.services.learning_resources import VERIFIED_LEARNING_RESOURCES
+
+        clean_assign_id = (assignment_id or "").strip()
+        clean_res_id = (resource_id or "").strip()
+
+        if not clean_assign_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Assignment identifier is required",
+            )
+
+        catalog_ids = {r["resource_id"] for r in VERIFIED_LEARNING_RESOURCES}
+        if clean_res_id not in catalog_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid or unrecognized learning resource identifier '{clean_res_id}'",
+            )
+
+        assign_call = db[ASSIGNMENTS_COLLECTION].find_one({"assignment_id": clean_assign_id})
+        assignment = await assign_call if hasattr(assign_call, "__await__") else assign_call
+        if not assignment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Interview assignment '{clean_assign_id}' was not found",
+            )
+
+        # Enforce student ownership and tenant isolation
+        clean_reg = (user.registration_number or "").strip().upper()
+        if user.role == UserRole.STUDENT:
+            if not clean_reg:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Student account does not have a verified registration number linked",
+                )
+            if assignment.get("student_registration_number") != clean_reg:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You are not authorized to update another student's watch progress",
+                )
+        elif user.role not in [
+            UserRole.PLATFORM_ADMIN,
+            UserRole.UNIVERSITY_ADMIN,
+            UserRole.DEPARTMENT_ADMIN,
+        ]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions to update video watch progress",
+            )
+
+        now = utc_now()
+        if watched:
+            update_query = {
+                "$addToSet": {"watched_video_resource_ids": clean_res_id},
+                "$set": {
+                    f"watched_resources_metadata.{clean_res_id}": {
+                        "watched": True,
+                        "updated_at": now,
+                        "updated_by_reg": clean_reg or user.email,
+                    },
+                    "updated_at": now,
+                },
+            }
+        else:
+            update_query = {
+                "$pull": {"watched_video_resource_ids": clean_res_id},
+                "$set": {
+                    f"watched_resources_metadata.{clean_res_id}": {
+                        "watched": False,
+                        "updated_at": now,
+                        "updated_by_reg": clean_reg or user.email,
+                    },
+                    "updated_at": now,
+                },
+            }
+
+        upd_call = db[ASSIGNMENTS_COLLECTION].update_one(
+            {"assignment_id": clean_assign_id},
+            update_query,
+        )
+        if hasattr(upd_call, "__await__"):
+            await upd_call
+
+        msg = (
+            f"Resource '{clean_res_id}' marked as watched."
+            if watched
+            else f"Resource '{clean_res_id}' marked as unwatched."
+        )
+
+        return UpdateVideoWatchStatusResponse(
+            assignment_id=clean_assign_id,
+            resource_id=clean_res_id,
+            watched=watched,
+            marked_at=now,
+            message=msg,
+        )
+
+    @staticmethod
+    async def update_video_watch_status_by_session(
+        db: AsyncIOMotorDatabase,
+        session_id: str,
+        resource_id: str,
+        watched: bool,
+        user: UserInDB,
+    ) -> UpdateVideoWatchStatusResponse:
+        """Helper routing session-based watch status updates to the parent assignment."""
+        sess_call = db[SESSIONS_COLLECTION].find_one({"session_id": session_id})
+        session = await sess_call if hasattr(sess_call, "__await__") else sess_call
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Interview session '{session_id}' not found",
+            )
+        return await InterviewSessionService.update_video_watch_status(
+            db=db,
+            assignment_id=session["assignment_id"],
+            resource_id=resource_id,
+            watched=watched,
+            user=user,
         )

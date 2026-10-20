@@ -70,3 +70,73 @@ export function getYouTubeEmbedUrl(urlOrId) {
   if (!videoId) return null;
   return `https://www.youtube-nocookie.com/embed/${videoId}?rel=0&modestbranding=1&enablejsapi=1`;
 }
+
+/**
+ * Constructs a safe external watch URL pointing strictly to standard YouTube watch path.
+ * Strips any tracking parameters, credentials, or session data.
+ */
+export function getYouTubeExternalUrl(urlOrId) {
+  if (!urlOrId || typeof urlOrId !== 'string') return null;
+  const videoId = /^[a-zA-Z0-9_-]{11}$/.test(urlOrId.trim())
+    ? urlOrId.trim()
+    : extractYouTubeVideoId(urlOrId);
+  if (!videoId) return null;
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+/**
+ * Maps YouTube error codes to student-friendly, actionable diagnostic messages.
+ */
+export function getYouTubeEmbedErrorMessage(errorCode) {
+  const code = Number(errorCode);
+  switch (code) {
+    case 101:
+    case 150:
+      return 'The content owner has restricted in-site playback for this video. You can watch it directly on the provider platform.';
+    case 100:
+      return 'This educational video has been removed, marked private, or is unavailable in your region.';
+    case 2:
+      return 'The video link contains an invalid parameter or syntax.';
+    case 5:
+      return 'An HTML5 player error occurred while rendering the video stream.';
+    default:
+      return 'In-site embedding for this video is restricted or unavailable.';
+  }
+}
+
+/**
+ * Resolves player configuration and accessibility attributes from raw props.
+ */
+export function resolveVideoPlayerProps({
+  videoUrl,
+  embedUrl,
+  videoId,
+  title = 'Topic Guide',
+  provider = 'VFSTR Curated Resource',
+  topic = 'Learning Resource',
+  canEmbed = true,
+} = {}) {
+  const resolvedVideoId = videoId || extractYouTubeVideoId(videoUrl);
+  const resolvedEmbedUrl = embedUrl || (resolvedVideoId ? getYouTubeEmbedUrl(resolvedVideoId) : null);
+  const isEmbedSupported = Boolean(canEmbed && resolvedEmbedUrl);
+  const safeExternalUrl = resolvedVideoId
+    ? getYouTubeExternalUrl(resolvedVideoId)
+    : (videoUrl && /^https?:\/\//i.test(videoUrl) ? videoUrl : null);
+
+  const cleanTitle = (title || 'Topic Guide').trim();
+  const cleanProvider = (provider || 'VFSTR Curated Resource').trim();
+  const cleanTopic = (topic || 'Learning Resource').trim();
+
+  return {
+    resolvedVideoId,
+    resolvedEmbedUrl,
+    isEmbedSupported,
+    safeExternalUrl,
+    cleanTitle,
+    cleanProvider,
+    cleanTopic,
+    iframeTitle: `Educational Tutorial: ${cleanTitle} by ${cleanProvider}`,
+    ariaPlayLabel: `Play tutorial: ${cleanTitle}`,
+    ariaExternalLabel: `Watch ${cleanTitle} on ${cleanProvider || 'YouTube'} in new tab`,
+  };
+}

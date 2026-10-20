@@ -13,7 +13,12 @@ from app.models.interview import (
     StudentAssignmentResponse,
     AssignmentStatus,
 )
-from app.models.interview_session import SessionStatus, StudentPerformanceReportResponse
+from app.models.interview_session import (
+    SessionStatus,
+    StudentPerformanceReportResponse,
+    UpdateVideoWatchStatusRequest,
+    UpdateVideoWatchStatusResponse,
+)
 from app.services.interview_session_service import _ensure_utc, InterviewSessionService
 from app.services.interview_service import InterviewService
 
@@ -102,6 +107,39 @@ async def get_performance_report(
         assignment_id=assignment_id,
         user=current_user,
     )
+
+
+@router.patch(
+    "/reports/{assignment_id}/videos/{resource_id}/watch",
+    response_model=UpdateVideoWatchStatusResponse,
+)
+async def update_video_watch_status(
+    assignment_id: str,
+    resource_id: str,
+    payload: Optional[UpdateVideoWatchStatusRequest] = None,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_interview_database),
+):
+    """
+    Student-authorized action to mark or unmark a recommended video as watched:
+    - Enforces verified student identity and ownership barrier.
+    - Validates resource_id against the verified educational resource catalog.
+    - Idempotently updates the assignment document without touching scoring/evaluation records.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interview database connection is unavailable",
+        )
+    watched = payload.watched if payload is not None else True
+    return await InterviewSessionService.update_video_watch_status(
+        db=db,
+        assignment_id=assignment_id,
+        resource_id=resource_id,
+        watched=watched,
+        user=current_user,
+    )
+
 
 
 @router.patch("/my-assignments/{assignment_id}/accept", response_model=StudentAssignmentResponse)

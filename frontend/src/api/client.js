@@ -655,6 +655,24 @@ export const getSessionPerformanceReport = async (sessionId) => {
   }
 };
 
+export const updateVideoWatchStatus = async (assignmentOrSessionId, resourceId, watched = true) => {
+  try {
+    const isSession = assignmentOrSessionId && assignmentOrSessionId.startsWith('sess_');
+    const endpoint = isSession
+      ? `/api/interview-rooms/sessions/${assignmentOrSessionId}/videos/${resourceId}/watch`
+      : `/api/student/interviews/reports/${assignmentOrSessionId}/videos/${resourceId}/watch`;
+    const response = await apiClient.patch(endpoint, { watched });
+    return { success: true, data: response.data };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.detail || error.message || 'Failed to update video watch status',
+      status: error.response?.status,
+    };
+  }
+};
+
+
 
 // Level 1 Proctoring Telemetry APIs
 export const recordProctoringEvents = async (sessionId, events) => {
