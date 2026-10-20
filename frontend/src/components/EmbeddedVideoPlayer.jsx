@@ -339,9 +339,11 @@ export default function EmbeddedVideoPlayer({
         </div>
       ) : (
         /* 3. Sleek Video Poster & In-Site Launch Banner */
-        <div className="relative w-full aspect-video bg-gradient-to-br from-slate-900 via-slate-950 to-indigo-950/40 flex flex-col justify-between p-5 border border-slate-800/80 group overflow-hidden">
-          {/* Subtle Ambient Background Accent */}
-          <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none group-hover:bg-indigo-600/20 transition-all duration-500" />
+        <div className="relative w-full aspect-video bg-gradient-to-br from-slate-950 via-[#0a1024] to-[#0c142c] flex flex-col justify-between p-5 border border-slate-800/80 group overflow-hidden">
+          {/* Subtle Cyber Grid and Ambient Radial Glow */}
+          <div className="cyber-grid opacity-20 absolute inset-0 pointer-events-none" />
+          <div className="absolute top-0 right-0 w-56 h-56 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none group-hover:bg-indigo-600/20 transition-all duration-700" />
+          <div className="absolute bottom-0 left-0 w-44 h-44 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none group-hover:bg-cyan-500/15 transition-all duration-700" />
 
           {/* Top Metadata Badges */}
           <div className="flex items-center justify-between gap-2 relative z-10 flex-wrap">
@@ -360,11 +362,11 @@ export default function EmbeddedVideoPlayer({
               type="button"
               onClick={handleStartPlayback}
               onKeyDown={handleKeyDownPlay}
-              className="w-14 h-14 rounded-full bg-gradient-to-tr from-indigo-600 to-cyan-600 text-white flex items-center justify-center shadow-lg shadow-indigo-600/30 hover:scale-110 active:scale-95 transition-all duration-300 border border-white/20 group-hover:shadow-indigo-500/50 print:hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 cursor-pointer"
+              className="w-14 h-14 rounded-full bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-500 text-white flex items-center justify-center shadow-xl shadow-indigo-600/30 ring-4 ring-indigo-500/20 group-hover:ring-indigo-500/40 group-hover:shadow-indigo-500/50 hover:scale-110 active:scale-95 transition-all duration-300 border border-white/20 print:hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 cursor-pointer"
               title="Watch tutorial directly on report page"
               aria-label={ariaPlayLabel}
             >
-              <Play className="w-6 h-6 ml-1 fill-white" />
+              <Play className="w-6 h-6 ml-0.5 fill-white" />
             </button>
             <div className="space-y-1 max-w-md px-2">
               <h5 className="text-sm font-bold text-white group-hover:text-cyan-200 transition-colors line-clamp-2 break-words">

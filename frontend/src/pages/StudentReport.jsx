@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   Award,
@@ -11,6 +11,8 @@ import {
   Sparkles,
   Zap,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   FileText,
   Video,
   ExternalLink,
@@ -23,11 +25,66 @@ import {
   GraduationCap,
   Info,
   TrendingUp,
-  Target
+  Target,
+  Code,
+  Filter,
+  Check,
+  CheckCircle,
 } from 'lucide-react';
 import { getStudentPerformanceReport, getSessionPerformanceReport, updateVideoWatchStatus } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import EmbeddedVideoPlayer from '../components/EmbeddedVideoPlayer';
+
+/**
+ * Circular score visualizer gauge with SVG gradient stroke
+ */
+function ScoreGauge({ score, maxScore = 10, percentage, isPass }) {
+  const radius = 38;
+  const circumference = 2 * Math.PI * radius;
+  const safePercent = Math.min(Math.max(percentage ?? (score / maxScore) * 100, 0), 100);
+  const strokeDashoffset = circumference - (safePercent / 100) * circumference;
+
+  return (
+    <div className="relative flex items-center justify-center shrink-0">
+      <svg className="w-24 h-24 sm:w-28 sm:h-28 transform -rotate-90" viewBox="0 0 96 96">
+        <circle
+          cx="48"
+          cy="48"
+          r={radius}
+          className="stroke-slate-800/80"
+          strokeWidth="6"
+          fill="transparent"
+        />
+        <circle
+          cx="48"
+          cy="48"
+          r={radius}
+          stroke="url(#scoreGradient)"
+          strokeWidth="6"
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          fill="transparent"
+          className="transition-all duration-1000 ease-out"
+        />
+        <defs>
+          <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor={isPass ? '#10b981' : '#f59e0b'} />
+            <stop offset="100%" stopColor={isPass ? '#06b6d4' : '#ef4444'} />
+          </linearGradient>
+        </defs>
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+        <span className="text-2xl sm:text-3xl font-extrabold font-mono text-white leading-none tracking-tight">
+          {score}
+        </span>
+        <span className="text-[10px] sm:text-[11px] text-slate-400 font-medium mt-0.5">
+          / {maxScore.toFixed(1)}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 export default function StudentReport() {
   const { assignmentId } = useParams();
@@ -39,6 +96,23 @@ export default function StudentReport() {
   const [error, setError] = useState(null);
   const [updatingWatchIds, setUpdatingWatchIds] = useState(new Set());
   const [watchUpdateErrors, setWatchUpdateErrors] = useState({});
+
+  // UI state for interactive filters & collapsible audit items
+  const [videoFilter, setVideoFilter] = useState('all'); // 'all' | 'to_review' | 'watched'
+  const [questionFilter, setQuestionFilter] = useState('all'); // 'all' | 'answered' | 'skipped'
+  const [expandedAnswers, setExpandedAnswers] = useState(new Set());
+
+  const toggleAnswerExpand = (index) => {
+    setExpandedAnswers((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  };
 
   const handleToggleWatchStatus = async (resourceId, currentWatched) => {
     if (!resourceId) return;
@@ -130,19 +204,19 @@ export default function StudentReport() {
     switch (diff) {
       case 'easy':
         return (
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
             Easy
           </span>
         );
       case 'hard':
         return (
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30">
             Hard
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
             Medium
           </span>
         );
@@ -153,7 +227,7 @@ export default function StudentReport() {
     const lvl = (level || '').toLowerCase();
     if (lvl.includes('exceptional')) {
       return (
-        <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center space-x-1.5 shadow-sm">
+        <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center space-x-1.5 shadow-sm shadow-emerald-500/10">
           <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
           <span>Exceptional Mastery</span>
         </span>
@@ -161,7 +235,7 @@ export default function StudentReport() {
     }
     if (lvl.includes('proficient')) {
       return (
-        <span className="px-3 py-1 rounded-full text-xs font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center space-x-1.5 shadow-sm">
+        <span className="px-3 py-1 rounded-full text-xs font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center space-x-1.5 shadow-sm shadow-cyan-500/10">
           <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400" />
           <span>Proficient Competency</span>
         </span>
@@ -169,28 +243,97 @@ export default function StudentReport() {
     }
     if (lvl.includes('satisfactory')) {
       return (
-        <span className="px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 flex items-center space-x-1.5 shadow-sm">
+        <span className="px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 flex items-center space-x-1.5 shadow-sm shadow-indigo-500/10">
           <TrendingUp className="w-3.5 h-3.5 text-indigo-400" />
           <span>Satisfactory Baseline</span>
         </span>
       );
     }
     return (
-      <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1.5 shadow-sm">
+      <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1.5 shadow-sm shadow-amber-500/10">
         <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
         <span>Targeted Revision Required</span>
       </span>
     );
   };
 
+  // Video recommendations filtering & progress calculations
+  const videoStats = useMemo(() => {
+    const recs = report?.video_recommendations || [];
+    const watched = recs.filter((v) => v.watched).length;
+    const total = recs.length;
+    const percent = total > 0 ? Math.round((watched / total) * 100) : 0;
+    return { watched, total, percent };
+  }, [report?.video_recommendations]);
+
+  const filteredVideos = useMemo(() => {
+    const recs = report?.video_recommendations || [];
+    if (videoFilter === 'watched') return recs.filter((v) => v.watched);
+    if (videoFilter === 'to_review') return recs.filter((v) => !v.watched);
+    return recs;
+  }, [report?.video_recommendations, videoFilter]);
+
+  // Question audit responses filtering
+  const filteredResponses = useMemo(() => {
+    const responses = report?.responses || [];
+    if (questionFilter === 'answered') {
+      return responses.filter((r) => !r.is_skipped && r.status !== 'skipped');
+    }
+    if (questionFilter === 'skipped') {
+      return responses.filter((r) => r.is_skipped || r.status === 'skipped');
+    }
+    return responses;
+  }, [report?.responses, questionFilter]);
+
+  // Key Highlights (Strengths vs Revision Areas)
+  const keyHighlights = useMemo(() => {
+    if (!report) return { strengths: [], focusAreas: [] };
+
+    const strengths = [];
+    const focusAreas = [];
+
+    // Extract from topic breakdown
+    if (report.topic_breakdown) {
+      report.topic_breakdown.forEach((t) => {
+        if (t.average_score >= 7.0) {
+          strengths.push({
+            topic: t.topic,
+            score: t.average_score,
+            text: `Demonstrated strong conceptual foundation with ${t.average_score}/10 average score.`,
+          });
+        }
+      });
+    }
+
+    // Extract from actionable priorities
+    if (report.actionable_priorities) {
+      report.actionable_priorities.forEach((p) => {
+        focusAreas.push({
+          topic: p.topic,
+          priority: p.priority,
+          score: p.average_score,
+          reason: p.reason,
+          steps: p.actionable_steps || [],
+        });
+      });
+    }
+
+    return { strengths, focusAreas };
+  }, [report]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#070B14] text-slate-100 flex flex-col items-center justify-center p-4">
-        <div className="p-8 rounded-2xl bg-slate-900/80 border border-slate-800 flex flex-col items-center space-y-4 max-w-sm w-full text-center shadow-2xl">
-          <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+        <div className="p-8 rounded-2xl bg-slate-900/80 border border-slate-800 flex flex-col items-center space-y-4 max-w-sm w-full text-center shadow-2xl backdrop-blur-xl">
+          <div className="relative">
+            <Loader2 className="w-10 h-10 text-cyan-400 animate-spin" />
+            <Sparkles className="w-4 h-4 text-indigo-400 absolute -top-1 -right-1 animate-pulse" />
+          </div>
           <div>
             <h2 className="text-sm font-bold text-white mb-1">Compiling Performance Report</h2>
-            <p className="text-xs text-slate-400">Aggregating topic mastery metrics and curated recommendations...</p>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Aggregating topic mastery metrics and curated recommendations...
+            </p>
           </div>
         </div>
       </div>
@@ -200,9 +343,9 @@ export default function StudentReport() {
   if (error || !report) {
     return (
       <div className="min-h-screen bg-[#070B14] text-slate-100 flex flex-col items-center justify-center p-4">
-        <div className="p-8 rounded-2xl bg-slate-900/80 border border-slate-800 max-w-md w-full space-y-4 shadow-2xl">
-          <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mx-auto">
-            <AlertCircle className="w-6 h-6 text-rose-400" />
+        <div className="p-8 rounded-2xl bg-slate-900/80 border border-slate-800 max-w-md w-full space-y-4 shadow-2xl backdrop-blur-xl">
+          <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mx-auto text-rose-400">
+            <AlertCircle className="w-6 h-6" />
           </div>
           <div className="text-center">
             <h2 className="text-base font-bold text-white mb-1">Report Unavailable</h2>
@@ -211,7 +354,7 @@ export default function StudentReport() {
           <div className="flex items-center justify-center space-x-3 pt-2">
             <button
               onClick={fetchReport}
-              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 border border-slate-700 transition"
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 border border-slate-700 transition cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Retry</span>
@@ -233,7 +376,7 @@ export default function StudentReport() {
 
   return (
     <div className="min-h-screen bg-[#070B14] text-slate-100 flex flex-col selection:bg-cyan-500/30 report-container">
-      {/* Print-specific style rules: renders with crisp white background and dark text without background graphics */}
+      {/* Print-specific style rules: renders with crisp white background and dark text */}
       <style>{`
         @media print {
           @page {
@@ -250,7 +393,7 @@ export default function StudentReport() {
             background-color: #ffffff !important;
             min-height: auto !important;
           }
-          header, button, .print\\:hidden {
+          header, button, .print\\:hidden, nav {
             display: none !important;
           }
           .print-header-banner {
@@ -306,7 +449,7 @@ export default function StudentReport() {
         }
       `}</style>
 
-      {/* Top Header */}
+      {/* Top Navigation Bar */}
       <header className="border-b border-slate-800/80 bg-[#0a101f]/90 backdrop-blur-xl sticky top-0 z-30 shadow-md print:hidden">
         <div className="max-w-6xl mx-auto px-4 py-3 sm:py-4 flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -315,19 +458,21 @@ export default function StudentReport() {
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <h1 className="text-sm font-bold text-white">Student Performance Report</h1>
+                <h1 className="text-sm font-bold text-white tracking-tight">Student Performance Report</h1>
                 <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800/60">
                   VFSTR
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400">{report.interview_title}</p>
+              <p className="text-[11px] text-slate-400 truncate max-w-[240px] sm:max-w-md">
+                {report.interview_title}
+              </p>
             </div>
           </div>
 
           <div className="flex items-center space-x-2.5">
             <button
               onClick={handlePrint}
-              className="px-3.5 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-750 text-slate-200 hover:text-white border border-slate-700/80 text-xs font-semibold flex items-center space-x-1.5 transition-all shadow-sm"
+              className="px-3.5 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-750 text-slate-200 hover:text-white border border-slate-700/80 text-xs font-semibold flex items-center space-x-1.5 transition-all shadow-sm cursor-pointer"
               title="Print or Save as PDF"
             >
               <Printer className="w-3.5 h-3.5 text-cyan-400" />
@@ -389,7 +534,10 @@ export default function StudentReport() {
               <div className="flex flex-wrap items-center gap-4 pt-2 text-xs text-slate-400">
                 <div className="flex items-center space-x-1.5">
                   <Clock className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Completed: {new Date(report.completed_at).toLocaleDateString()} at {new Date(report.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  <span>
+                    Completed: {new Date(report.completed_at).toLocaleDateString()} at{' '}
+                    {new Date(report.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 </div>
                 <div className="flex items-center space-x-1.5">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
@@ -408,39 +556,53 @@ export default function StudentReport() {
                 <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
                   <div className="text-[10px] uppercase font-semibold text-emerald-400">Answered</div>
                   <div className="text-sm font-bold text-emerald-300 font-mono">
-                    {report.questions_answered ?? (report.responses?.filter(r => !r.is_skipped && r.status !== 'skipped').length || 0)}
+                    {report.questions_answered ??
+                      (report.responses?.filter((r) => !r.is_skipped && r.status !== 'skipped').length || 0)}
                   </div>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
                   <div className="text-[10px] uppercase font-semibold text-amber-400">Skipped</div>
                   <div className="text-sm font-bold text-amber-300 font-mono">
-                    {report.questions_skipped ?? (report.responses?.filter(r => r.is_skipped || r.status === 'skipped').length || 0)}
+                    {report.questions_skipped ??
+                      (report.responses?.filter((r) => r.is_skipped || r.status === 'skipped').length || 0)}
                   </div>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
                   <div className="text-[10px] uppercase font-semibold text-cyan-400">Evaluated</div>
                   <div className="text-sm font-bold text-cyan-300 font-mono">
-                    {report.questions_evaluated ?? (report.responses?.filter(r => !r.is_skipped && r.status !== 'skipped' && (r.score ?? r.evaluation_score) != null).length || 0)}
+                    {report.questions_evaluated ??
+                      (report.responses?.filter(
+                        (r) => !r.is_skipped && r.status !== 'skipped' && (r.score ?? r.evaluation_score) != null
+                      ).length || 0)}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Score Metric Circular/Box Widget */}
-            <div className="flex items-center space-x-4 p-5 rounded-2xl bg-slate-950/70 border border-slate-800/90 shadow-inner shrink-0 self-stretch sm:self-auto justify-around sm:justify-start">
-              <div className="text-right">
-                <div className="text-[11px] uppercase font-bold text-slate-400 tracking-wider">Overall Score</div>
-                <div className="text-xs font-semibold text-cyan-300">{report.percentage_score}% Mastery</div>
-              </div>
-              <div
-                className={`w-20 h-20 rounded-2xl flex flex-col items-center justify-center font-extrabold text-2xl border shadow-lg ${
-                  isPass
-                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-emerald-500/10'
-                    : 'bg-amber-500/10 text-amber-400 border-amber-500/30 shadow-amber-500/10'
-                }`}
-              >
-                <span>{report.overall_score}</span>
-                <span className="text-[10px] text-slate-400 font-normal">/ 10.0</span>
+            {/* Score Metric Circular Gauge Widget */}
+            <div className="flex flex-col sm:flex-row items-center gap-5 p-5 rounded-2xl bg-slate-950/70 border border-slate-800/90 shadow-inner shrink-0 self-stretch sm:self-auto justify-between sm:justify-start">
+              <ScoreGauge
+                score={report.overall_score}
+                maxScore={10.0}
+                percentage={report.percentage_score}
+                isPass={isPass}
+              />
+              <div className="text-center sm:text-left space-y-1">
+                <div className="text-[11px] uppercase font-bold text-slate-400 tracking-wider">
+                  Overall Competency
+                </div>
+                <div className="text-base font-bold text-cyan-300 font-mono">
+                  {report.percentage_score}% Mastery
+                </div>
+                <span
+                  className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                    isPass
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                  }`}
+                >
+                  {isPass ? 'Benchmark Cleared' : 'Further Practice Suggested'}
+                </span>
               </div>
             </div>
           </div>
@@ -468,6 +630,53 @@ export default function StudentReport() {
             </div>
           )}
         </section>
+
+        {/* Executive Highlights Summary (Strengths & Revision Focus) */}
+        {(keyHighlights.strengths.length > 0 || keyHighlights.focusAreas.length > 0) && (
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-5 rounded-2xl bg-emerald-950/15 border border-emerald-900/30 space-y-3">
+              <div className="flex items-center space-x-2">
+                <CheckCircle className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">Demonstrated Technical Strengths</h3>
+              </div>
+              {keyHighlights.strengths.length > 0 ? (
+                <ul className="space-y-2 text-xs text-slate-300">
+                  {keyHighlights.strengths.map((s, idx) => (
+                    <li key={idx} className="flex items-start space-x-2">
+                      <span className="text-emerald-400 font-bold">•</span>
+                      <span>
+                        <strong className="text-emerald-200">{s.topic}:</strong> {s.text}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-slate-400">Baseline competency demonstrated across tested technical areas.</p>
+              )}
+            </div>
+
+            <div className="p-5 rounded-2xl bg-amber-950/15 border border-amber-900/30 space-y-3">
+              <div className="flex items-center space-x-2">
+                <Target className="w-4 h-4 text-amber-400" />
+                <h3 className="text-sm font-bold text-white">Targeted Revision Opportunities</h3>
+              </div>
+              {keyHighlights.focusAreas.length > 0 ? (
+                <ul className="space-y-2 text-xs text-slate-300">
+                  {keyHighlights.focusAreas.slice(0, 2).map((f, idx) => (
+                    <li key={idx} className="flex items-start space-x-2">
+                      <span className="text-amber-400 font-bold">•</span>
+                      <span>
+                        <strong className="text-amber-200">{f.topic}:</strong> {f.reason}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-slate-400">No critical weaknesses detected in this assessment session.</p>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Section 1: Topic-Wise Mastery Breakdown & Evidence Limits */}
         <section className="space-y-4">
@@ -502,9 +711,13 @@ export default function StudentReport() {
                             <span>{t.topic}</span>
                           </h4>
                           <div className="flex items-center space-x-2 text-[11px] text-slate-400">
-                            <span>{t.questions_tested} {t.questions_tested === 1 ? 'question tested' : 'questions tested'}</span>
+                            <span>
+                              {t.questions_tested} {t.questions_tested === 1 ? 'question tested' : 'questions tested'}
+                            </span>
                             <span>•</span>
-                            <span className="font-mono">Min: {t.min_score} / Max: {t.max_score}</span>
+                            <span className="font-mono">
+                              Min: {t.min_score} / Max: {t.max_score}
+                            </span>
                           </div>
                         </div>
 
@@ -630,19 +843,69 @@ export default function StudentReport() {
 
         {/* Section 3: Verified Learning Video Recommendations */}
         <section className="space-y-4">
-          <div>
-            <h3 className="text-base font-bold text-white flex items-center space-x-2">
-              <Video className="w-4 h-4 text-indigo-400" />
-              <span>Personalized Video Recommendations</span>
-            </h3>
-            <p className="text-xs text-slate-400">
-              Verified educational resources mapped directly to your performance evidence for interview preparation.
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                <Video className="w-4 h-4 text-indigo-400" />
+                <span>Personalized Video Recommendations</span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Verified educational resources mapped directly to your performance evidence for interview preparation.
+              </p>
+            </div>
+
+            {/* Filter Tabs and Watched Progress Badge */}
+            {report.video_recommendations && report.video_recommendations.length > 0 && (
+              <div className="flex items-center space-x-3 shrink-0 print:hidden flex-wrap gap-y-2">
+                <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-xs text-slate-300">
+                  <span className="text-indigo-400 font-bold font-mono">
+                    {videoStats.watched}/{videoStats.total}
+                  </span>
+                  <span>Completed</span>
+                </div>
+
+                <div className="flex items-center p-0.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setVideoFilter('all')}
+                    className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
+                      videoFilter === 'all'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    All ({videoStats.total})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVideoFilter('to_review')}
+                    className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
+                      videoFilter === 'to_review'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    To Review ({videoStats.total - videoStats.watched})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVideoFilter('watched')}
+                    className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
+                      videoFilter === 'watched'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Watched ({videoStats.watched})
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {report.video_recommendations && report.video_recommendations.length > 0 ? (
-              report.video_recommendations.map((vid, idx) => (
+            {filteredVideos && filteredVideos.length > 0 ? (
+              filteredVideos.map((vid, idx) => (
                 <div
                   key={vid.resource_id || idx}
                   className="p-5 rounded-2xl bg-slate-900/70 border border-slate-800/90 hover:border-indigo-500/40 transition flex flex-col justify-between space-y-4 group shadow-sm"
@@ -676,7 +939,9 @@ export default function StudentReport() {
                     </h4>
 
                     <div className="text-xs text-slate-400 flex items-center space-x-2">
-                      <span>Provider: <strong className="text-slate-300">{vid.provider}</strong></span>
+                      <span>
+                        Provider: <strong className="text-slate-300">{vid.provider}</strong>
+                      </span>
                       <span>•</span>
                       <span className="capitalize">{vid.difficulty_level} Level</span>
                     </div>
@@ -768,83 +1033,221 @@ export default function StudentReport() {
 
         {/* Section 4: Question-by-Question Response Audit */}
         <section className="space-y-4">
-          <div>
-            <h3 className="text-base font-bold text-white flex items-center space-x-2">
-              <FileText className="w-4 h-4 text-cyan-400" />
-              <span>Question-by-Question Response Audit</span>
-            </h3>
-            <p className="text-xs text-slate-400">
-              Detailed breakdown of prompt, submitted candidate response, evaluator feedback, and rubric score.
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                <FileText className="w-4 h-4 text-cyan-400" />
+                <span>Question-by-Question Response Audit</span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Detailed breakdown of prompt, submitted candidate response, evaluator feedback, and rubric score.
+              </p>
+            </div>
+
+            {/* Filter Tabs for Questions */}
+            {report.responses && report.responses.length > 0 && (
+              <div className="flex items-center p-0.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs shrink-0 print:hidden">
+                <button
+                  type="button"
+                  onClick={() => setQuestionFilter('all')}
+                  className={`px-3 py-1 rounded-lg font-medium transition cursor-pointer ${
+                    questionFilter === 'all'
+                      ? 'bg-cyan-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  All ({report.responses.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuestionFilter('answered')}
+                  className={`px-3 py-1 rounded-lg font-medium transition cursor-pointer ${
+                    questionFilter === 'answered'
+                      ? 'bg-cyan-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Answered ({report.responses.filter((r) => !r.is_skipped && r.status !== 'skipped').length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuestionFilter('skipped')}
+                  className={`px-3 py-1 rounded-lg font-medium transition cursor-pointer ${
+                    questionFilter === 'skipped'
+                      ? 'bg-cyan-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Skipped ({report.responses.filter((r) => r.is_skipped || r.status === 'skipped').length})
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="space-y-4">
-            {report.responses && report.responses.length > 0 ? (
-              report.responses.map((item, idx) => (
-                <div
-                  key={idx}
-                  className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800/80 space-y-3.5 shadow-sm"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs font-mono font-bold text-cyan-300">Question {item.question_index}</span>
-                        <span className="text-xs text-slate-600">•</span>
-                        <span className="text-xs text-slate-300 font-semibold">{item.topic}</span>
-                        {getDifficultyBadge(item.difficulty)}
-                        {(item.is_skipped || item.status === 'skipped') && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                            Skipped
+            {filteredResponses && filteredResponses.length > 0 ? (
+              filteredResponses.map((item, idx) => {
+                const isSkipped = item.is_skipped || item.status === 'skipped';
+                const isExpanded = expandedAnswers.has(item.question_index);
+                const answerText = item.answer_text || '';
+                const isLongAnswer = answerText.length > 280;
+
+                return (
+                  <div
+                    key={item.question_index ?? idx}
+                    className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800/80 space-y-4 shadow-sm hover:border-slate-700/80 transition"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div className="space-y-1.5 flex-1">
+                        <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+                          <span className="text-xs font-mono font-bold text-cyan-300">
+                            Question {item.question_index}
                           </span>
+                          <span className="text-xs text-slate-600">•</span>
+                          <span className="text-xs text-slate-300 font-semibold">{item.topic}</span>
+                          {getDifficultyBadge(item.difficulty)}
+                          {isSkipped && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              Skipped by Candidate
+                            </span>
+                          )}
+                          {item.question_type && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-slate-800 text-slate-400 border border-slate-700">
+                              {item.question_type}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs sm:text-sm text-white font-medium leading-relaxed">
+                          {item.question_text}
+                        </p>
+                      </div>
+
+                      <div className="text-right shrink-0 bg-slate-950/80 px-3.5 py-2 rounded-xl border border-slate-800">
+                        {isSkipped ? (
+                          <span className="text-xs font-semibold text-amber-400 font-mono">
+                            No score (Skipped)
+                          </span>
+                        ) : (
+                          <>
+                            <span className="text-base font-bold text-cyan-300 font-mono">
+                              {item.score ?? item.evaluation_score ?? 0}
+                            </span>
+                            <span className="text-xs text-slate-500"> / 10</span>
+                          </>
                         )}
                       </div>
-                      <p className="text-xs sm:text-sm text-white font-medium leading-relaxed">
-                        {item.question_text}
-                      </p>
                     </div>
 
-                    <div className="text-right shrink-0 bg-slate-950/80 px-3 py-1.5 rounded-xl border border-slate-800">
-                      {item.is_skipped || item.status === 'skipped' ? (
-                        <span className="text-xs font-semibold text-amber-400 font-mono">
-                          No score (Skipped)
-                        </span>
+                    {/* Candidate Response Block with Expand/Collapse */}
+                    <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800/60 text-xs text-slate-300 leading-relaxed overflow-x-auto space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] uppercase font-bold text-slate-400">
+                        <span>{isSkipped ? 'Response Status:' : 'Your Submitted Response:'}</span>
+                        {item.language && (
+                          <span className="font-mono text-cyan-400 lowercase">{item.language}</span>
+                        )}
+                      </div>
+                      {isSkipped ? (
+                        <p className="italic text-slate-400">
+                          Question was skipped by candidate without an answer submission. Missing evidence is excluded
+                          from penalizing evaluated topics.
+                        </p>
                       ) : (
-                        <>
-                          <span className="text-sm font-bold text-cyan-300 font-mono">
-                            {item.score ?? item.evaluation_score ?? 0}
-                          </span>
-                          <span className="text-xs text-slate-500"> / 10</span>
-                        </>
+                        <div>
+                          <pre
+                            className={`font-mono text-slate-200 whitespace-pre-wrap break-words ${
+                              isLongAnswer && !isExpanded ? 'line-clamp-4' : ''
+                            }`}
+                          >
+                            {answerText}
+                          </pre>
+                          {isLongAnswer && (
+                            <button
+                              type="button"
+                              onClick={() => toggleAnswerExpand(item.question_index)}
+                              className="mt-2 text-cyan-400 hover:text-cyan-300 font-semibold text-[11px] flex items-center space-x-1 cursor-pointer print:hidden"
+                            >
+                              <span>{isExpanded ? 'Collapse response' : 'Show full response'}</span>
+                              {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
-                  </div>
 
-                  <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800/60 text-xs font-mono text-slate-300 leading-relaxed overflow-x-auto">
-                    <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">
-                      {item.is_skipped || item.status === 'skipped' ? 'Response Status:' : 'Your Submitted Response:'}
+                    {/* Code Execution Summary (for Coding Questions) */}
+                    {item.code_execution_summary && (
+                      <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/70 text-xs font-mono space-y-1">
+                        <div className="text-[10px] uppercase font-bold text-slate-400 flex items-center space-x-1.5">
+                          <Code className="w-3 h-3 text-cyan-400" />
+                          <span>Code Execution Diagnostics</span>
+                        </div>
+                        {item.code_execution_summary.status && (
+                          <div className="text-slate-300">
+                            Status: <strong className="text-emerald-400">{item.code_execution_summary.status}</strong>
+                          </div>
+                        )}
+                        {item.code_execution_summary.stdout && (
+                          <pre className="text-slate-400 text-[11px] bg-slate-950 p-2 rounded border border-slate-900 mt-1">
+                            {item.code_execution_summary.stdout}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Evaluator Feedback Box */}
+                    <div className="p-4 rounded-xl bg-indigo-950/20 border border-indigo-900/30 text-xs text-slate-300 leading-relaxed space-y-2.5">
+                      <div>
+                        <strong className="text-indigo-300 block mb-0.5">
+                          {isSkipped ? 'Interviewer / Audit Note:' : 'Evaluator Rubric Feedback:'}
+                        </strong>
+                        <p>{item.feedback}</p>
+                      </div>
+
+                      {/* Demonstrated Strengths Bullets */}
+                      {item.strengths && item.strengths.length > 0 && (
+                        <div className="pt-2 border-t border-indigo-900/30">
+                          <span className="text-[10px] uppercase font-bold text-emerald-400 block tracking-wider mb-1">
+                            Demonstrated Strengths:
+                          </span>
+                          <ul className="space-y-1 text-xs text-slate-300">
+                            {item.strengths.map((s, sIdx) => (
+                              <li key={sIdx} className="flex items-start space-x-1.5">
+                                <span className="text-emerald-400 font-bold">•</span>
+                                <span>{s}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Targeted Areas for Improvement Bullets */}
+                      {item.improvements && item.improvements.length > 0 && (
+                        <div className="pt-2 border-t border-indigo-900/30">
+                          <span className="text-[10px] uppercase font-bold text-amber-400 block tracking-wider mb-1">
+                            Targeted Areas for Improvement:
+                          </span>
+                          <ul className="space-y-1 text-xs text-slate-300">
+                            {item.improvements.map((imp, impIdx) => (
+                              <li key={impIdx} className="flex items-start space-x-1.5">
+                                <span className="text-amber-400 font-bold">•</span>
+                                <span>{imp}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
-                    {item.is_skipped || item.status === 'skipped' ? (
-                      <span className="italic text-slate-400">Question was skipped by candidate without an answer submission.</span>
-                    ) : (
-                      item.answer_text
+
+                    {/* Adaptive Transition Note */}
+                    {item.difficulty_adjustment_rationale && (
+                      <div className="text-[11px] text-slate-400 font-mono flex items-center space-x-1.5 pt-1">
+                        <Zap className="w-3 h-3 text-amber-400 shrink-0" />
+                        <span>Adaptive Transition: {item.difficulty_adjustment_rationale}</span>
+                      </div>
                     )}
                   </div>
-
-                  <div className="p-3 rounded-xl bg-indigo-950/20 border border-indigo-900/30 text-xs text-slate-300 leading-relaxed">
-                    <strong className="text-indigo-300 block mb-0.5">
-                      {item.is_skipped || item.status === 'skipped' ? 'Interviewer / Audit Note:' : 'Evaluator Rubric Feedback:'}
-                    </strong>
-                    {item.feedback}
-                  </div>
-
-                  {item.difficulty_adjustment_rationale && (
-                    <div className="text-[11px] text-slate-400 font-mono flex items-center space-x-1.5">
-                      <Zap className="w-3 h-3 text-amber-400 shrink-0" />
-                      <span>Adaptive Transition: {item.difficulty_adjustment_rationale}</span>
-                    </div>
-                  )}
-                </div>
-              ))
+                );
+              })
             ) : (
               <p className="text-xs text-slate-400">No question response audit items recorded.</p>
             )}
@@ -852,12 +1255,16 @@ export default function StudentReport() {
         </section>
 
         {/* Assessment Disclaimer Footer */}
-        <footer className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 text-slate-400 text-xs leading-relaxed space-y-1.5 print:mt-8">
+        <footer className="p-5 rounded-2xl bg-slate-950/80 border border-slate-800 text-slate-400 text-xs leading-relaxed space-y-2 print:mt-8">
           <div className="font-semibold text-slate-300 flex items-center space-x-1.5">
             <ShieldAlert className="w-3.5 h-3.5 text-indigo-400" />
             <span>Algorithmic Assessment Disclaimer</span>
           </div>
           <p>{report.disclaimer}</p>
+          <div className="text-[11px] text-slate-500 pt-1 border-t border-slate-900 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span>VFSTR Automated Placement Interview Evaluation Intelligence System</span>
+            <span>Report ID: {report.report_id}</span>
+          </div>
         </footer>
 
       </main>
